@@ -4,7 +4,18 @@
 
 ### Problem Statement
 
-Employees and site visitors need instant IT support answers (how-tos, access requests, troubleshooting). The chatbot should answer using an internal knowledge base (RAG). When knowledge is missing, it should actively crawl allowed websites to gather the needed information. If the user is dissatisfied, angry, or explicitly asks for a human, the bot must file a Jira ticket with a concise summary and what was tried.
+Employees and site visitors need instant, accurate IT support answers grounded in an internal knowledge base (RAG) with clear citations. When context is insufficient, the chatbot should proactively expand context by crawling only allowed websites and by accepting and interpreting attachments (e.g., logs, screenshots)—while protecting confidential/PII data via consistent redaction. The bot should ask targeted clarifying questions and guide users through brief troubleshooting checklists; it should also retrieve relevant past cases to suggest proven fixes and adapt tone/complexity to the user. If the user explicitly requests a human, remains dissatisfied/angry, or a broader incident is detected, it should create or update a Jira ticket with a concise summary, what was tried, citations, and any incident linkage, and notify the user. The bot should collect feedback for continuous improvement and propose updates to our knowledge base over time.
+
+Company business case: The bulk of the knowledge base comes from resolved support tickets. A large share of requests follow recurring patterns that don’t require advanced diagnostics and should be auto-routed or automated when safe. Typical categories include:
+
+- Internet/VPN connectivity issues
+- Name/password change requests (including automated reset when authorized)
+- Employee course questions
+- Finding documentation/departments
+- Exchanging peripherals
+- Peripherals/equipment questions
+
+For these common cases, the agent should quickly classify intent, retrieve the corresponding entry, and either resolve directly, execute approved automations (e.g., password reset), or assign to the appropriate technician queue. Unique or complex cases should be escalated with full context so human technicians can focus on higher-value work.
 
 ### Key Capabilities
 
@@ -16,6 +27,16 @@ Employees and site visitors need instant IT support answers (how-tos, access req
 - Sentiment and intent analysis of user messages to detect anger/dissatisfaction or a request for a human handoff.
 - Automatic Jira ticket creation with context, attempted steps, and citations.
 - Served over HTTP (FastAPI). Entire app runs in a container (Docker).
+- Multimodal inputs: accept and interpret attachments (text log files, screenshots/images) to better diagnose issues.
+- Past case retrieval: retrieve relevant historical tickets/tech logs to surface proven fixes and known issues.
+- Confidential information protection: automatically detect and flag/redact confidential/PII data and avoid echoing it back.
+- Proactive clarification: ask targeted follow-up questions to gather missing technical details.
+- Style adaptation: adapt tone and complexity to the employee’s style/skill while staying professional.
+- Troubleshooting checklists: guide employees through simple, structured steps before escalation.
+- Ticket controls: auto-create tickets when needed and allow explicit “create ticket” on request; notify when tickets are created.
+- Major incident linkage: inform users when their issue matches/links to an ongoing outage/incident (from a status website) and reflect that in tickets.
+- Feedback: let users rate helpfulness and use scores for continuous improvement.
+- Knowledge freshness: auto-propose SharePoint documentation updates when recurring gaps are detected.
 
 ### In-Scope Dependencies (if needed)
 
@@ -38,6 +59,21 @@ Employees and site visitors need instant IT support answers (how-tos, access req
 - As a user, if the bot doesn’t find relevant KB entries, it proactively crawls our IT help site and then answers.
 - As a frustrated user, I say “This still doesn’t work. I need a human.” and a Jira ticket is filed with the chat transcript, attempted steps, and links used.
 - As an admin, I can control seed URLs, allowed domains, top_k retrieval, crawl depth, and rate limits via config.
+- As a technician, I want the agent to interpret attached text logs and images to better understand the issue.
+- As a technician, I want the agent to retrieve relevant past tickets/logs to suggest likely fixes.
+- As a technician, I want the agent to detect and flag confidential information, avoiding relaying it back.
+- As a technician, I want the agent to ask targeted questions to collect key technical details.
+- As an employee, I want the agent to match my conversational style and knowledge level without becoming unprofessional.
+- As a technician, I want the agent to log each action for auditability.
+- As a technician, I want automatic ticket creation when the bot can’t resolve issues adequately.
+- As an employee, I want the option to explicitly ask the bot to create a ticket.
+- As a technician, I want employees to follow a simple checklist the bot provides to self-resolve when possible.
+- As an employee, I want to be notified when the bot created a ticket and get a link/ID.
+- As an employee, I want to be informed if my issue is linked to a broader outage/problem.
+- As an employee, I want to rate the bot’s helpfulness.
+- As a technician, I want the bot to update a ticket if it’s part of a broader problem.
+- As a technician, I want the bot to automatically propose updates to SharePoint documentation.
+- As a technician, I want the bot to redact confidential information in all outward artifacts (logs, tickets).
 
 ### Non-Functional
 
@@ -45,6 +81,11 @@ Employees and site visitors need instant IT support answers (how-tos, access req
 - Reliability: node-level retries; graceful fallbacks; clear stop conditions.
 - Observability: structured logs; trace IDs across nodes.
 - Security: restrict crawler to allowed domains; redact secrets; adhere to robots.txt if configured.
+- Integrations: access active tickets via Jira (read/update) not only create.
+- Channel: accessed on a new SharePoint page (embedding the chat UI).
+- Knowledge source: SharePoint (pages/lists) is a primary knowledge base; RAG over SharePoint contents + crawled sites.
+- Language: English for conversations and technician log files (company language at Stibo).
+- Professionalism: style adaptation must not lead to inappropriate workplace communication.
 
 ---
 
@@ -70,23 +111,87 @@ At a high level, the chatbot follows this loop:
 
 ```mermaid
 flowchart TD
-    A[IngestRequest] --> B[EmbedQuery]
-    B --> C[RetrieveFromChroma]
-    C --> D{DecideAction}
+    subgraph Intake[Turn Intake]
+        A[IngestRequest] --> A2[IngestAttachments]
+        A2 --> A3[PiiDetectAndRedact]
+        A3 --> S[SentimentAndIntent]
+    end
 
-    D -->|answer| E[GenerateAnswer]
-    D -->|crawl| F[PlanLinks]
-    D -->|escalate| M[CreateJiraTicket]
+    subgraph CommonIntents[Common Intents & Automation]
+        CI[DetectCommonIntent]
+        EX[ExecuteAutomation]
+    end
 
-    F --> G[AsyncParallel CrawlPages]
-    G --> H[ExtractAndSemanticChunk]
-    H --> I[EmbedAndUpsertToChroma]
-    I --> C  %% loop: re-retrieve with updated KB
+    subgraph RAG[Online RAG]
+        B[EmbedQuery]
+        C[RetrieveFromChroma]
+        PC[RetrievePastCases]
+        MC[MergeContext]
+        INC[CheckIncidentStatus]
+        LI[LinkIncident]
+    end
 
-    E --> J[SentimentAndIntent]
-    J -->|escalate| M
-    J -->|ok| K[Finish]
-    M --> K[Finish]
+    subgraph Crawl[Crawl Loop]
+        F[PlanLinks]
+        G[AsyncParallel CrawlPages]
+        H[ExtractAndSemanticChunk]
+        I[EmbedAndUpsertToChroma]
+    end
+
+    D{DecideAction}
+    E[AnswerQuery]
+    Q[ClarifyAndAsk]
+    R[WaitForUserResponse Async]
+    M[CreateJiraTicket Escalation]
+    N[NotifyTicketCreation]
+    CS[CreateJiraTicket Solved Silent]
+    L[CollectFeedback]
+    K[Finish]
+
+    %% Sentiment on latest user input (node should skip on first turn)
+    S -->|escalate| M
+    S -->|ok| CI
+
+    %% Common intents: may auto-execute, else proceed to RAG
+    CI -->|auto_action| EX
+    EX --> E
+    CI -->|continue| B
+
+    %% RAG with past cases and incident linkage
+    B --> C
+    C --> PC
+    PC --> MC
+    MC --> INC
+    INC -->|incident_found| LI
+    INC -->|none| D
+    LI --> D
+
+    %% Agent decision
+    D -->|answer| E
+    D -->|clarify| Q
+    D -->|crawl| F
+    D -->|escalate| M
+
+    %% Crawl loop enriches KB then re-retrieve
+    F --> G --> H --> I --> C
+
+    %% Clarify loop
+    E -->|needs_more_info| Q
+    Q --> R
+    R --> A
+    R -->|user_requests_human or max_clarify_reached| M
+
+    %% Answer outcomes
+    E -->|resolved| CS
+    E -->|unresolved or user_requests_human or low_confidence| M
+
+    %% Escalation path with notification
+    M --> N --> K
+
+    %% Silent solved ticket creation (no notify)
+    CS --> K
+
+    K --> L
 ```
 
 Stop conditions for the crawl loop: max depth, max pages, time budget, or “enough context” signal from DecideAction.
@@ -158,6 +263,36 @@ Stop conditions for the crawl loop: max depth, max pages, time budget, or “eno
 
 Optional: crawl4ai helpers for sitemap, frontier management, dedupe.
 
+11. attachments_ingest (utils/attachments.py)
+
+- Input: list of uploaded files (MIME-aware)
+- Output: normalized texts (from .txt/.log), OCR’d text from images, metadata
+- Necessity: Multimodal understanding of user-provided context
+
+12. pii_detect (utils/pii.py)
+
+- Input: text
+- Output: redaction map and cleaned text
+- Necessity: Prevent echoing confidential information; scrub artifacts (answers, logs, tickets)
+
+13. sharepoint_client (utils/sharepoint.py)
+
+- Input: credentials/site ID/list IDs or Graph API config
+- Output: fetch/update pages, list items, attachments
+- Necessity: Use SharePoint as KB and propose updates
+
+14. past_cases_search (utils/past_cases.py)
+
+- Input: question text, attachments-derived text
+- Output: top similar past tickets/logs with summaries
+- Necessity: Retrieve institutional memory for better suggestions
+
+15. incident_lookup (utils/incidents.py)
+
+- Input: signals (service name, error signatures), external status feeds
+- Output: linked incident/outage info if any
+- Necessity: Inform users and link tickets to broader problems
+
 ---
 
 ## 5) Data Design (Shared Store)
@@ -189,13 +324,20 @@ shared = {
     "query": None,
     "history": [],                # previous turns (optional)
     "answer": None,
-    "citations": [],              # list of {url, snippet}
+      "citations": [],              # list of {url, snippet}
+      "attachments": [],            # [{filename, mime, text, ocr, sha1}]
+      "style": {                    # style guidance per user/turn
+         "reading_level": "default",
+         "tone": "professional",
+      },
+      "rating": None,               # user feedback score (e.g., 1-5)
   },
 
   "retrieval": {
     "q_embedding": None,
     "hits": [],                   # [{chunk, url, score}]
     "enough_context": False,
+      "iterations": 0,
   },
 
   "crawl": {
@@ -211,7 +353,17 @@ shared = {
   "jira": {
     "should_escalate": False,
     "issue": None,               # {key, url}
+      "updates": [],               # history of updates/links to incidents
   },
+
+   "incidents": {
+      "linked": None,              # {id, title, status, url}
+   },
+
+   "pii": {
+      "found": False,
+      "redactions": [],            # [{pattern, replacement, scope}]
+   },
 
   "telemetry": {
     "trace_id": None,
@@ -310,6 +462,59 @@ shared = {
 - SentimentAndIntent - "escalate" >> CreateJiraTicket >> Finish
 - SentimentAndIntent - "ok" >> Finish
 
+13. IngestAttachments (BatchNode)
+
+- prep: read uploaded files metadata from request payload
+- exec: normalize text logs; OCR images; compute hashes; limit sizes
+- post: store normalized texts into chat.attachments; emit events
+
+14. PiiDetectAndRedact (Regular)
+
+- prep: combine question + attachment texts
+- exec: run pii_detect; produce redaction map and cleaned text
+- post: set pii flags; replace sensitive spans in downstream prompts and artifacts
+
+15. RetrievePastCases (Regular)
+
+- prep: build query from question + attachment signals
+- exec: past_cases_search across Jira/tech logs
+- post: add summaries into retrieval.hits with lower priority than live RAG
+
+16. ClarifyQuestion (Regular)
+
+- prep: analyze missing fields (OS, device, error codes) and confidence
+- exec: generate 1-3 targeted follow-up questions
+- post: if needed, return action "clarify" causing a short loop to gather answers
+
+17. TroubleshootingChecklist (Regular)
+
+- prep: based on problem category (e.g., VPN, email)
+- exec: produce a short checklist (3–7 steps)
+- post: present steps; gather confirmations; proceed or escalate
+
+18. IncidentCheck (Regular)
+
+- prep: extract product/service, error signatures
+- exec: incident_lookup; detect outages
+- post: set incidents.linked and possibly return action "inform_outage"
+
+19. NotifyTicketCreated (Regular)
+
+- prep: jira.issue
+- exec/post: send a concise confirmation with link/ID; write to chat history
+
+20. UpdateTicketIfBroader (Regular)
+
+- prep: jira.issue and incidents.linked
+- exec: add relation/comment to ticket; push status updates
+- post: append jira.updates
+
+21. SharePointUpdateProposal (Regular)
+
+- prep: identify repeated missing info across similar issues
+- exec: draft a doc update (PR-like suggestion)
+- post: store proposal or call sharepoint_client to create a draft
+
 ### Edge Cases & Guards
 
 - Crawl limits: max_depth, max_pages, time budget; short-circuit when enough_context=True.
@@ -317,13 +522,22 @@ shared = {
 - Duplicate URLs and content dedupe.
 - Non-HTML content (PDF): skip or convert later (out-of-scope initial version).
 - Jira failures: fall back to instruct user to contact support email; keep transcript in logs.
+- Attachments: size/type limits; ignore unsupported formats gracefully.
+- PII: redactions applied consistently across prompts, logs, tickets, and responses.
+- Clarification loops: cap number of follow-up interactions to avoid fatigue.
 
 ---
 
 ## 7) API Surface (FastAPI)
 
-- POST /chat: {user_id, query, locale?, history?} -> {answer, citations, escalated?, jira_issue?}
+- POST /chat: {user_id, query, locale?, history?, attachments?} -> {answer, citations, escalated?, jira_issue?, rating?}
 - GET /health: readiness/liveness
+
+Notes:
+
+- Support multipart/form-data for attachments (text logs, images). Perform OCR for images server-side.
+- Add an optional feedback endpoint or include rating in a follow-up POST to persist scores.
+- Provide a flag to explicitly request ticket creation from the UI.
 
 Use python-multipart for potential file uploads in future (e.g., screenshots). Responses include citations and trace_id for debugging.
 
@@ -331,14 +545,15 @@ Use python-multipart for potential file uploads in future (e.g., screenshots). R
 
 ## 8) Containerization & Runtime
 
-- Packaging: Docker (single-service is sufficient and simpler than Kubernetes initially).
-- Base image: python:3.11-slim; install Playwright and deps (chromium).
+- Packaging: Docker
+- Base image: python:3.13.7-slim; install Playwright and deps (chromium).
 - Run server via uvicorn (FastAPI) in the container.
 - Environment variables:
   - CHROMA_HOST/PORT/COLLECTION
   - JIRA_BASE_URL, JIRA_EMAIL, JIRA_API_TOKEN, JIRA_PROJECT_KEY
   - ALLOWED_DOMAINS, SEED_URL, MAX_DEPTH, MAX_PAGES, TOP_K
   - LLM_PROVIDER/MODEL and API credentials as needed
+  - SHAREPOINT\_\* (tenant/client IDs or Graph scopes), OCR toggle, PII policy toggles
 - Ports: expose 8000 by default.
 - ChromaDB: separate server/container. Configure via env: CHROMA_HOST, CHROMA_PORT, CHROMA_COLLECTION.
 
@@ -361,11 +576,13 @@ Use python-multipart for potential file uploads in future (e.g., screenshots). R
 3. Add sentiment/intent checkpoint and Jira integration.
 4. Containerize with Dockerfile; verify headless browser works in container; document env vars.
 5. Hardening: limits, logging, tests, and basic dashboards.
+6. Add attachments ingestion (logs/images) and OCR with PII detection/redaction.
+7. Integrate past case retrieval and incident linkage; add ticket update/notification nodes.
+8. Add troubleshooting checklist and clarification loops; add feedback ratings.
 
 ---
 
 ## 11) Out of Scope (v1)
 
-- Authenticated areas requiring SSO for crawling.
 - Parsing binary formats (PDF/Office docs) — can be added later.
 - Multi-language summarization beyond simple locale hints.
