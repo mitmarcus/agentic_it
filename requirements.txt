@@ -1,0 +1,13 @@
+# LLM providers
+groq
+
+# Vector database and embeddings
+chromadb
+sentence-transformers
+
+# Utilities
+python-dotenv
+
+# Testing
+pytest
+pytest-asyncio

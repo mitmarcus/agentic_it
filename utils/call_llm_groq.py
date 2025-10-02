@@ -42,7 +42,7 @@ def call_llm(prompt: str) -> str:
     
     return result
 
-# Test standalone execution
+# Test standalone call_llm function
 if __name__ == "__main__":
     # Load environment variables from .env file if present; I don't like load_dotenv but it works
     # if you know better ways please submit a PR
@@ -52,5 +52,8 @@ if __name__ == "__main__":
     test_prompt = "What is the capital of France? Answer in one word."
     
     print("Testing Groq API...")
-    response = call_llm(test_prompt)
-    print(f"Response: {response}")
+    try:
+        response = call_llm(test_prompt)
+        print(f"Response: {response}")
+    except Exception as e:
+        print(f"\nError during standalone test: {e}")
