@@ -1,0 +1,44 @@
+services:
+  # ChromaDB Vector Database
+  chromadb:
+    image: ghcr.io/chroma-core/chroma:latest
+    container_name: it-support-chromadb
+    ports:
+      - "8001:8000"
+    volumes:
+      - chroma_data:/chroma/chroma
+    environment:
+      IS_PERSISTENT: "TRUE"
+      ANONYMIZED_TELEMETRY: "FALSE"
+    restart: unless-stopped
+    networks:
+      - chatbot-network
+
+  # Backend API Service
+  chatbot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: it-support-chatbot
+    ports:
+      - "8000:8000"
+    env_file:
+      - path: ./.env
+        required: false
+    volumes:
+      - ./logs:/app/logs
+    restart: unless-stopped
+    depends_on:
+      - chromadb
+    networks:
+      - chatbot-network
+
+networks:
+  chatbot-network:
+    driver: bridge
+
+volumes:
+  chroma_data:
+    driver: local
+  logs:
+    driver: local
