@@ -18,6 +18,13 @@ RUN pip install -r requirements.txt
 
 # Copy application code
 COPY utils/ ./utils/
+COPY cremedelacreme/ ./cremedelacreme/
+COPY nodes.py .
+COPY flows.py .
+COPY main.py .
+
+# Create directories
+RUN mkdir -p logs data/docs
 
 # Expose port
 EXPOSE 8000

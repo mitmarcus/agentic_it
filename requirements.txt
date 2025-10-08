@@ -5,8 +5,13 @@ groq
 chromadb
 sentence-transformers
 
+# Web framework
+fastapi
+uvicorn
+
 # Utilities
 python-dotenv
+pyyaml
 
 # Testing
 pytest
