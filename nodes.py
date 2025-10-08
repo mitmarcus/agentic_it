@@ -173,11 +173,11 @@ class DecisionMakerNode(Node):
         """Gather all context for decision making."""
         # Get conversation history
         session_id = shared.get("session_id", "")
-        history = conversation_memory.get_conversation_history(session_id, limit=3)
+        history = conversation_memory.get_conversation_history(session_id, limit=10)
         
-        # Format history
+        # Format history - exclude the very last message (current query)
         history_str = ""
-        for msg in history[-6:]:  # Last 3 exchanges (6 messages)
+        for msg in history[:-1][-6:]:  # Last 3 exchanges, excluding current query
             history_str += f"{msg['role']}: {msg['content']}\n"
         
         # Get retrieved docs summary
@@ -273,7 +273,7 @@ confidence: <0.0 to 1.0>
 
 Think carefully and make the best decision for the user."""
 
-        response = call_llm(prompt)
+        response = call_llm(prompt, max_tokens=512)
         
         # Parse YAML response
         yaml_str = response.split("```yaml")[1].split("```")[0].strip() if "```yaml" in response else response
@@ -290,8 +290,23 @@ Think carefully and make the best decision for the user."""
         return decision
     
     def exec_fallback(self, prep_res: Dict, exc: Exception) -> Dict:
-        """Fallback: clarify if decision making fails."""
+        """Fallback: make intelligent decision based on context when LLM fails."""
         logger.error(f"Decision making failed: {exc}")
+        
+        # Smart fallback based on available context
+        has_docs = bool(prep_res.get("doc_summaries"))
+        intent = prep_res.get("intent", {}).get("intent", "unknown")
+        confidence = prep_res.get("intent", {}).get("confidence", 0)
+        
+        # If rate limit and we have good docs, try to answer
+        if "rate limit" in str(exc).lower() and has_docs and confidence > 0.6:
+            return {
+                "action": "answer",
+                "reasoning": "Rate limited but have relevant docs",
+                "confidence": 0.5
+            }
+        
+        # Otherwise ask for clarification
         return {
             "action": "clarify",
             "reasoning": "System error, need more information",
@@ -330,11 +345,11 @@ class GenerateAnswerNode(Node):
     def prep(self, shared: Dict) -> Dict:
         """Read query, context, and history."""
         session_id = shared.get("session_id", "")
-        history = conversation_memory.get_conversation_history(session_id, limit=2)
+        history = conversation_memory.get_conversation_history(session_id, limit=10)
         
-        # Format last 2 exchanges (4 messages)
+        # Format last 2 exchanges (4 messages), excluding current query
         history_str = ""
-        for msg in history[-4:]:
+        for msg in history[:-1][-4:]:
             history_str += f"{msg['role']}: {msg['content']}\n"
         
         return {
@@ -367,9 +382,27 @@ You are a helpful IT support assistant. Provide accurate, concise answers based 
 
 ### YOUR ANSWER"""
 
-        answer = call_llm(prompt)
+        answer = call_llm(prompt, max_tokens=512)
         logger.info(f"Generated answer: {len(answer)} chars")
         return answer
+    
+    def exec_fallback(self, prep_res: Dict, exc: Exception) -> str:
+        """Fallback: provide helpful message based on available context."""
+        logger.error(f"Answer generation failed: {exc}")
+        
+        if "rate limit" in str(exc).lower():
+            return ("I'm currently experiencing high API usage. However, based on the available documentation, "
+                    "I can see information related to your query. Please try again in a few minutes, "
+                    "or contact IT support directly for immediate assistance.")
+        
+        # Generic fallback with context if available
+        if prep_res.get("rag_context"):
+            return (f"I found relevant documentation for your query about '{prep_res['user_query']}', "
+                    "but I'm unable to generate a detailed response right now. "
+                    "Please check the IT knowledge base or contact support for assistance.")
+        
+        return ("I'm having trouble generating a response right now. "
+                "Please contact IT support for direct assistance with your query.")
     
     def post(self, shared: Dict, prep_res: Dict, exec_res: str) -> str:
         """Write answer to response."""
@@ -394,25 +427,51 @@ class AskClarifyingQuestionNode(Node):
         super().__init__(max_retries=2, wait=1)
     
     def prep(self, shared: Dict) -> Dict:
-        """Read query and intent."""
+        """Read query, intent, and conversation history."""
+        session_id = shared.get("session_id", "")
+        history = conversation_memory.get_conversation_history(session_id, limit=10)
+        
+        # Format last 2 exchanges, excluding current query
+        history_str = ""
+        for msg in history[:-1][-4:]:
+            history_str += f"{msg['role']}: {msg['content']}\n"
+        
         return {
             "user_query": shared.get("user_query", ""),
-            "intent": shared.get("intent", {})
+            "intent": shared.get("intent", {}),
+            "conversation_history": history_str
         }
     
     def exec(self, context: Dict) -> str:
         """Generate clarifying question."""
-        prompt = f"""The user asked: "{context['user_query']}"
+        prompt = f"""### CONVERSATION HISTORY
+{context['conversation_history'] if context['conversation_history'] else 'No previous conversation.'}
 
-Their intent appears to be: {context['intent'].get('intent', 'unclear')} (confidence: {context['intent'].get('confidence', 0):.2f})
+### CURRENT USER MESSAGE
+"{context['user_query']}"
 
-Generate a specific, helpful clarifying question to better understand their issue.
+### INTENT CLASSIFICATION
+Intent: {context['intent'].get('intent', 'unclear')} (confidence: {context['intent'].get('confidence', 0):.2f})
+
+### YOUR TASK
+Based on the conversation history and the user's current message, generate a specific, 
+helpful clarifying question to better understand their issue. Consider what you already 
+know from the conversation.
+
 Be concise (1-2 sentences) and friendly.
 
 Clarifying question:"""
 
-        question = call_llm(prompt)
+        question = call_llm(prompt, max_tokens=256)  # Limit tokens for clarification
         return question.strip()
+    
+    def exec_fallback(self, prep_res: Dict, exc: Exception) -> str:
+        """Fallback: provide generic clarifying question on error."""
+        logger.error(f"Clarifying question generation failed: {exc}")
+        # Generic fallback based on context
+        if "rate limit" in str(exc).lower():
+            return "I'm experiencing high load right now. Could you please provide more details about your issue so I can help you better?"
+        return "Could you please provide more details about your issue?"
     
     def post(self, shared: Dict, prep_res: Dict, exec_res: str) -> str:
         """Write clarifying question to response."""
@@ -462,7 +521,141 @@ class FormatFinalResponseNode(Node):
 
 
 # ============================================================================
-# Node 8: NotImplementedNode (placeholder)
+# Node 8: InteractiveTroubleshootNode
+# ============================================================================
+
+class InteractiveTroubleshootNode(Node):
+    """Provide interactive troubleshooting guidance."""
+    
+    def __init__(self):
+        super().__init__(max_retries=2, wait=1)
+    
+    def prep(self, shared: Dict) -> Dict:
+        """Gather context for troubleshooting."""
+        session_id = shared.get("session_id", "")
+        history = conversation_memory.get_conversation_history(session_id, limit=5)
+        
+        # Get current troubleshooting state
+        ts_state = shared.get("troubleshoot_state", {})
+        
+        return {
+            "user_query": shared.get("user_query", ""),
+            "intent": shared.get("intent", {}),
+            "retrieved_docs": shared.get("retrieved_docs", []),
+            "conversation_history": history,
+            "current_step": ts_state.get("current_step", 0),
+            "steps_completed": ts_state.get("steps_completed", []),
+            "issue_type": ts_state.get("issue_type", "")
+        }
+    
+    def exec(self, context: Dict) -> str:
+        """Generate troubleshooting steps."""
+        # Build context for LLM
+        doc_context = ""
+        if context["retrieved_docs"]:
+            doc_context = "\n".join([
+                f"- {doc['metadata'].get('title', 'Untitled')}: {doc['text'][:200]}..."
+                for doc in context["retrieved_docs"][:3]
+            ])
+        
+        history_str = ""
+        if context["conversation_history"]:
+            history_str = "\n".join([
+                f"{msg['role']}: {msg['content']}"
+                for msg in context["conversation_history"][-3:]
+            ])
+        
+        # Analyze conversation to determine troubleshooting phase
+        is_first_step = context['current_step'] == 0
+        has_documentation = bool(doc_context)
+        has_history = bool(history_str)
+        
+        prompt = f"""You are an IT support troubleshooting assistant. Guide the user step-by-step through their technical issue.
+
+**CURRENT SITUATION:**
+• User says: "{context['user_query']}"
+• Issue type: {context['intent'].get('intent', 'unknown')}
+• Troubleshooting step: {context['current_step'] + 1}
+{f"• Steps tried: {', '.join(context['steps_completed'])}" if context['steps_completed'] else ""}
+
+**AVAILABLE CONTEXT:**
+{f"Documentation:\n{doc_context[:300]}..." if has_documentation else "• No official documentation found"}
+
+{f"Recent conversation:\n{history_str}" if has_history else ""}
+
+**YOUR TASK:**
+{"**Initial Assessment** - Understand the problem:" if is_first_step else "**Next Step** - Based on what they've reported:"}
+{"1. Ask 1-2 diagnostic questions (e.g., error messages, when it started, what they've tried)" if is_first_step else "1. Analyze their last response to determine what worked/didn't work"}
+{"2. Explain what you're checking for and why" if is_first_step else "2. Provide ONE clear, actionable step (not multiple options)"}
+{"3. Give first simple troubleshooting step to try" if is_first_step else "3. Explain what this step checks/fixes"}
+4. Ask them to report specific results or observations
+
+**SMART TROUBLESHOOTING PRINCIPLES:**
+• Follow the diagnostic tree: Check simple/common issues before complex ones
+• Don't repeat steps they've already mentioned trying
+• If a step failed, don't suggest the same approach - pivot to alternatives
+• Look for patterns: error messages, timing, specific scenarios
+• Know when to escalate: If 3+ steps fail, suggest creating a ticket
+{f"• Use official docs when relevant: {doc_context[:150]}..." if has_documentation else "• Without docs, rely on general IT best practices"}
+
+**RESPONSE STYLE:**
+Be conversational, not robotic. Format with bullet points for clarity. Keep it concise (3-5 sentences max).
+
+Your response:"""
+
+        response = call_llm(prompt, max_tokens=512)
+        return response
+    
+    def exec_fallback(self, prep_res: Dict, exc: Exception) -> str:
+        """Fallback: provide basic troubleshooting guidance on error."""
+        logger.error(f"Troubleshooting guidance generation failed: {exc}")
+        
+        is_first_step = prep_res.get("current_step", 0) == 0
+        user_query = prep_res.get("user_query", "your issue")
+        
+        if "rate limit" in str(exc).lower():
+            if is_first_step:
+                return (f"I understand you're experiencing an issue with {user_query}. "
+                        "I'm currently experiencing high load, but I can still help. "
+                        "Could you tell me: When did this start happening? "
+                        "Are you seeing any error messages? "
+                        "What have you already tried?")
+            else:
+                return ("I'm experiencing high load right now. "
+                        "Based on what you've told me, please try restarting the device/application "
+                        "and let me know if that resolves the issue.")
+        
+        return ("I'm having trouble generating detailed troubleshooting steps right now. "
+                "Please contact IT support directly for immediate assistance, "
+                "or try again in a few minutes.")
+    
+    def post(self, shared: Dict, prep_res: Dict, exec_res: str) -> str:
+        """Update troubleshooting state and response."""
+        # Update troubleshooting state
+        if "troubleshoot_state" not in shared:
+            shared["troubleshoot_state"] = {
+                "current_step": 0,
+                "steps_completed": [],
+                "issue_type": prep_res["intent"].get("intent", "")
+            }
+        
+        shared["troubleshoot_state"]["current_step"] += 1
+        
+        # Store response
+        if "response" not in shared:
+            shared["response"] = {}
+        
+        shared["response"]["text"] = exec_res
+        shared["response"]["action_taken"] = "troubleshoot"
+        shared["response"]["requires_followup"] = True
+        
+        logger.info(f"Troubleshooting step {shared['troubleshoot_state']['current_step']} completed")
+        
+        return "default"
+
+
+# ============================================================================
+# Node 9: NotImplementedNode (placeholder for other features)
 # ============================================================================
 
 class NotImplementedNode(Node):

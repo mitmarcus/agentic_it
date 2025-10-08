@@ -2,22 +2,27 @@
 Groq LLM API wrapper.
 Picked Groq because it has a free api and is actually pretty fast.
 """
-from groq import Groq
+from groq import Groq, RateLimitError
 import os
+import logging
+
+logger = logging.getLogger(__name__)
 
 
-def call_llm(prompt: str) -> str:
+def call_llm(prompt: str, max_tokens: int = 1024) -> str:
     """
     Call Groq LLM API with the given prompt.
     
     Args:
         prompt: Text prompt for the LLM
+        max_tokens: Maximum tokens in response (default: 1024)
     
     Returns:
         Generated text response
         
     Raises:
         ValueError: If API key not set or response is empty
+        RateLimitError: If rate limit exceeded (for Node retry handling)
         Exception: If API call fails (propagates to Node for retry handling)
     """
     api_key = os.getenv("GROQ_API_KEY")
@@ -29,18 +34,26 @@ def call_llm(prompt: str) -> str:
         raise ValueError("GROQ_MODEL environment variable not set")
 
     client = Groq(api_key=api_key)
-    response = client.chat.completions.create(
-        model=model,
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.2,
-        max_tokens=1024,
-    )
     
-    result = response.choices[0].message.content
-    if not result:
-        raise ValueError("Empty response from Groq API")
-    
-    return result
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.2,
+            max_tokens=max_tokens,
+        )
+        
+        result = response.choices[0].message.content
+        if not result:
+            raise ValueError("Empty response from Groq API")
+        
+        return result
+        
+    except RateLimitError as e:
+        # Log rate limit error with details
+        logger.error(f"Rate limit exceeded: {e}")
+        # Re-raise for Node fallback handling
+        raise
 
 # Test standalone call_llm function
 if __name__ == "__main__":

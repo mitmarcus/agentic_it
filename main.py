@@ -177,6 +177,8 @@ async def process_query(request: QueryRequest):
             "turn_count": turn_count
         }
         
+        conversation_memory.add_message(session_id, "assistant", response_text)
+        
         logger.info(f"Query processed successfully. Action: {action_taken}")
         
         return {
