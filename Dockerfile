@@ -1,5 +1,6 @@
 # Backend Dockerfile
-FROM python:slim
+# seems to work better than FROM python:slim
+FROM python:3.13-slim 
 
 # Set working directory
 WORKDIR /app
@@ -21,6 +22,7 @@ COPY utils/ ./utils/
 COPY cremedelacreme/ ./cremedelacreme/
 COPY nodes.py .
 COPY flows.py .
+COPY models.py .
 COPY main.py .
 
 # Create directories

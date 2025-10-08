@@ -33,6 +33,23 @@ services:
     networks:
       - chatbot-network
 
+  frontend:
+    image: node:20-alpine
+    container_name: it-support-frontend
+    working_dir: /app
+    command: sh -c "npm install && npm run dev -- --hostname 0.0.0.0 --port 3000"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      - chatbot
+    networks:
+      - chatbot-network
+
 networks:
   chatbot-network:
     driver: bridge
