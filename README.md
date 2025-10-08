@@ -12,7 +12,7 @@ The system uses agentic decision-making and RAG (Retrieval-Augmented Generation)
 - ✅ **Intent Classification**: Automatically categorizes user queries
 - ✅ **Sensitive Data Redaction**: Automatically removes passwords, emails, API keys
 - ✅ **Docker Compose**: Easy deployment with containerized services
-- 🚧 **Interactive Troubleshooting**: Guided step-by-step workflows
+- ✅ **Interactive Troubleshooting**: Guided step-by-step workflows
 - 🚧 **Jira Integration**: Ticket creation and search
 - 🚧 **Major Incident Detection**: Alerts about known outages
 
@@ -115,7 +115,7 @@ python test_chatbot.py
    - `answer`: Generate response using retrieved docs
    - `clarify`: Ask for more details
    - `search_kb`: Search again with refined query
-   - `troubleshoot`: Start guided workflow (not yet implemented)
+   - `troubleshoot`: Start guided workflow 
    - `create_ticket`: Create Jira ticket (not yet implemented)
 5. **Generate Answer**: Uses Groq LLM with RAG context
 6. **Format Response**: Prepares final response for user
