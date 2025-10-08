@@ -14,6 +14,7 @@ from nodes import (
     GenerateAnswerNode,
     AskClarifyingQuestionNode,
     FormatFinalResponseNode,
+    InteractiveTroubleshootNode,
     NotImplementedNode,
     # Offline indexing nodes
     LoadDocumentsNode,
@@ -56,8 +57,10 @@ def create_query_flow() -> Flow:
     clarify_node = AskClarifyingQuestionNode()
     format_node = FormatFinalResponseNode()
     
+    # Interactive troubleshooting node
+    troubleshoot_node = InteractiveTroubleshootNode()
+    
     # Placeholder nodes for not-yet-implemented features
-    troubleshoot_node = NotImplementedNode("Interactive troubleshooting")
     search_tickets_node = NotImplementedNode("Ticket search")
     create_ticket_node = NotImplementedNode("Ticket creation")
     
