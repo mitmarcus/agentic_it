@@ -12,6 +12,7 @@ uvicorn
 # Utilities
 python-dotenv
 pyyaml
+pdfplumber
 
 # Testing
 pytest
