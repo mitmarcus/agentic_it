@@ -13,6 +13,7 @@ uvicorn
 python-dotenv
 pyyaml
 pdfplumber
+beautifulsoup4
 
 # Testing
 pytest
