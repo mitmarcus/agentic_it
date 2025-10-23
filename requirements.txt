@@ -15,6 +15,7 @@ uvicorn==0.37.0
 python-dotenv==1.1.1
 pyyaml==6.0.3
 pdfplumber
+beautifulsoup4
 
 # Testing
 pytest==8.4.2
