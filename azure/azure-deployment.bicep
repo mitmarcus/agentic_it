@@ -1,23 +1,30 @@
-@description('environment id')
-param envId string = 'TBD'
+@secure()
+param openaiKey string
+@secure
+param jiraToken string
+@secure
+param storageAccountName string
 
+param location string = 'TBD'
+param resourceGroupName = 'TBD'
+param envId string = 'TBD'
 
 resource agent-database "Microsoft.App/containerApps@2023-03-01" = {
     name: it-support-chromadb
-    location: 'northeurope'
-    properties:
-        environmentId: '${envId}'
+    location: location
+    properties: {
+        environmentId: envId
         configuration: {
             ingress: {
                 external: false
                 targetPort: 8000
             }
         }
-        volumes:{
+        volumes: {
             name: 'chroma-data'
             azureFile: {
                 shareName: 'chroma-data'
-                storageAccountName: TBD //todo look if this is available in the current env
+                storageAccountName: storageAccountName
             }
         }
         template: {
@@ -35,17 +42,24 @@ resource agent-database "Microsoft.App/containerApps@2023-03-01" = {
                             value: 'TRUE'
                         }
                     ]
+                    volumeMounts: [
+                        {
+                            name: 'chroma-data'
+                            mountPath: '/chroma/chroma'
+                        }
+                    ]
+                    resources: {
+                        cpy: 1
+                        memory: '2Gi'
+                    }
                 }
-                volumeMounts: [
-                    name: 'chroma-data'
-                    mountPath: '/chroma/chroma'
-                ]
             ]
             scale: {
                 minReplicas: 1
                 maxReplicas: 1
             }
         }
+    }
 }
 
 // ---- one of the options will be picked
@@ -70,22 +84,33 @@ resource agent-database 'Microsoft.Search/searchServices@2023-08-01' = {
 
 resource agent-chatbot "Microsoft.App/containerApps@2023-03-01" = {
     name: 'it-support-chatbot'
-    location: westeurope //todo double check it
+    location: location
     properties: {
-        environmentId: '${envId}'
+        environmentId: envId
         configuration: {
             ingress: {
                 external: false
                 targetPort: 8000
             }
-
-            volumes: {
-                name: 'chatbot-logs'
-                azureFile: {
-                    shareName: 'chatbot-logs'
-                    storageAccountName: TBD //todo look if this is available in the current env
+            secrets: [
+                {
+                    name: 'openai-key'
+                    value: openaiKey
                 }
-            }
+                {
+                    name: 'jira-token'
+                    value: jiraToken
+                }
+            ]
+            volumes: [
+                {
+                    name: 'chatbot-logs'
+                    azureFile: {
+                        shareName: 'chatbot-logs'
+                        storageAccountName: storageAccountName
+                    }
+                }
+            ]
         }
         template: {
             containers: [
@@ -95,37 +120,70 @@ resource agent-chatbot "Microsoft.App/containerApps@2023-03-01" = {
 
                     env: [
                         {
-                            name: 'CHROMADB_URL' / 'AISEARCH_URL'
-                            value: TBD
-                        }
-                        {
                             name: 'OPENAI_KEY'
                             secretRef: 'openai-key'
                         }
+                        {
+                            name: 'JIRA_TOKEN'
+                            valueRef: 'jira-token'
+                        }
+                        {
+                            name: 'CHROMADB_URL'
+                            value: 'http://it-support-chromadb.internal:8000'
+                        }
                     ]
-
                     volumeMounts: [
                         {
                             name: 'chatbot-logs'
                             mountPath: '/app/logs'
                         }
                     ]
-
                     resources: {
                         cpu: 1 // might need 2 if we consider image porcessing
                         memory: '2Gi' // might need 4 Gi
                     }
-
                 }
             ]
-
             scale: {
                 minReplicas: 0 // adds serverless activity, so we save money. probably will take a while to boot up though
                 maxReplicas: 2 // dk how much we want to scale it 
             }
         }
     }
-
 }
 
-
+resource agent-frontend "Microsoft.App/containerApps@2023-03-01" = {
+    name: 'it-support-frontend'
+    location: location
+    properties: {
+        environmentId: envId
+        configuration: {
+            ingress: {
+                external: true
+                targetPort: 3000
+            }
+        }
+        template: {
+            containers: [
+                {
+                    name: 'it-support-frontend'
+                    image: TBD
+                    env: [
+                        {
+                            name: 'NEXT_PUBLIC_API_URL'
+                            value: 'http://it-support-chatbot.internal:8000'
+                        }
+                    ]
+                    resources: {
+                        cpu: 0.5
+                        memory: '1Gi'
+                    }
+                }
+            ]
+            scale: {
+                minReplicas: 0
+                maxReplicas: 2
+            }
+        }
+    }
+}
