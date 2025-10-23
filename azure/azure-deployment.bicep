@@ -1,8 +1,12 @@
+@description('environment id')
+param envId string = 'TBD'
+
+
 resource agent-database "Microsoft.App/containerApps@2023-03-01" = {
     name: it-support-chromadb
     location: 'northeurope'
     properties:
-        environmentId: TBD
+        environmentId: '${envId}'
         configuration: {
             ingress: {
                 external: false
@@ -46,9 +50,9 @@ resource agent-database "Microsoft.App/containerApps@2023-03-01" = {
 
 // ---- one of the options will be picked
 
-resource aiSearch 'Microsoft.Search/searchServices@2023-08-01' = {
-  name: 'my-ai-search'        // must be globally unique within Azure
-  location: 'westeurope'
+resource agent-database 'Microsoft.Search/searchServices@2023-08-01' = {
+  name: 'it-support-ai-search'        // must be globally unique within Azure
+  location: 'northeurope'
   sku: {
     name: 'basic'             // Options: Free, Basic, Standard, etc.
     capacity: 1
@@ -65,11 +69,63 @@ resource aiSearch 'Microsoft.Search/searchServices@2023-08-01' = {
 // ===
 
 resource agent-chatbot "Microsoft.App/containerApps@2023-03-01" = {
-    dependsOn: [agent-database]
-    name: 'chatbot'
+    name: 'it-support-chatbot'
+    location: westeurope //todo double check it
+    properties: {
+        environmentId: '${envId}'
+        configuration: {
+            ingress: {
+                external: false
+                targetPort: 8000
+            }
+
+            volumes: {
+                name: 'chatbot-logs'
+                azureFile: {
+                    shareName: 'chatbot-logs'
+                    storageAccountName: TBD //todo look if this is available in the current env
+                }
+            }
+        }
+        template: {
+            containers: [
+                {
+                    name: 'it-support-chatbot'
+                    image: TBD //look into it
+
+                    env: [
+                        {
+                            name: 'CHROMADB_URL' / 'AISEARCH_URL'
+                            value: TBD
+                        }
+                        {
+                            name: 'OPENAI_KEY'
+                            secretRef: 'openai-key'
+                        }
+                    ]
+
+                    volumeMounts: [
+                        {
+                            name: 'chatbot-logs'
+                            mountPath: '/app/logs'
+                        }
+                    ]
+
+                    resources: {
+                        cpu: 1 // might need 2 if we consider image porcessing
+                        memory: '2Gi' // might need 4 Gi
+                    }
+
+                }
+            ]
+
+            scale: {
+                minReplicas: 0 // adds serverless activity, so we save money. probably will take a while to boot up though
+                maxReplicas: 2 // dk how much we want to scale it 
+            }
+        }
+    }
+
 }
 
-resource agent-frontend "Microsoft.App/containerApps@2023-03-01" = {
-    dependsOn: [agent-chatbot]
-    name: 'frontend'
-}
+
