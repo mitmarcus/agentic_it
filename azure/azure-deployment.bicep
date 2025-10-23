@@ -1,16 +1,16 @@
 @secure()
 param openaiKey string
-@secure
+@secure()
 param jiraToken string
-@secure
+@secure()
 param storageAccountName string
 
 param location string = 'TBD'
-param resourceGroupName = 'TBD'
-param envId string = 'TBD'
+param resourceGroupName string= 'TBD' // might not be needed
+param envId string = 'subscription'
 
-resource agent-database "Microsoft.App/containerApps@2023-03-01" = {
-    name: it-support-chromadb
+resource agentDatabase 'Microsoft.App/containerApps@2023-03-01' = {
+    name: 'it-support-chromadb'
     location: location
     properties: {
         environmentId: envId
@@ -31,7 +31,7 @@ resource agent-database "Microsoft.App/containerApps@2023-03-01" = {
             containers: [
                 {
                     name: 'chromadb'
-                    image: 'ghcr.io/chroma-core/chroma:latest'
+                    image: 'repository?'
                     env: [
                         {
                             name: 'IS_PERSISTENT'
@@ -64,25 +64,25 @@ resource agent-database "Microsoft.App/containerApps@2023-03-01" = {
 
 // ---- one of the options will be picked
 
-resource agent-database 'Microsoft.Search/searchServices@2023-08-01' = {
-  name: 'it-support-ai-search'        // must be globally unique within Azure
-  location: 'northeurope'
-  sku: {
-    name: 'basic'             // Options: Free, Basic, Standard, etc.
-    capacity: 1
-  }
-  properties: {
-    hostingMode: 'default'    // default or highDensity
-    replicaCount: 1           // for redundancy/scaling
-    partitionCount: 1         // number of partitions for scaling
-    publicNetworkAccess: 'Disabled'  // can set to 'Enabled' for public access
-    // optional: assign admin API key via keyVault later
-  }
-}
+// resource agent-database 'Microsoft.Search/searchServices@2023-08-01' = {
+//   name: 'it-support-ai-search'        // must be globally unique within Azure
+//   location: 'northeurope'
+//   sku: {
+//     name: 'basic'             // Options: Free, Basic, Standard, etc.
+//     capacity: 1
+//   }
+//   properties: {
+//     hostingMode: 'default'    // default or highDensity
+//     replicaCount: 1           // for redundancy/scaling
+//     partitionCount: 1         // number of partitions for scaling
+//     publicNetworkAccess: 'Disabled'  // can set to 'Enabled' for public access
+//     // optional: assign admin API key via keyVault later
+//   }
+// }
 
 // ===
 
-resource agent-chatbot "Microsoft.App/containerApps@2023-03-01" = {
+resource agentChatbot 'Microsoft.App/containerApps@2023-03-01' = {
     name: 'it-support-chatbot'
     location: location
     properties: {
@@ -116,7 +116,7 @@ resource agent-chatbot "Microsoft.App/containerApps@2023-03-01" = {
             containers: [
                 {
                     name: 'it-support-chatbot'
-                    image: TBD //look into it
+                    image: 'TBD' //look into it
 
                     env: [
                         {
@@ -152,7 +152,7 @@ resource agent-chatbot "Microsoft.App/containerApps@2023-03-01" = {
     }
 }
 
-resource agent-frontend "Microsoft.App/containerApps@2023-03-01" = {
+resource agentFrontend 'Microsoft.App/containerApps@2023-03-01' = {
     name: 'it-support-frontend'
     location: location
     properties: {
@@ -167,7 +167,7 @@ resource agent-frontend "Microsoft.App/containerApps@2023-03-01" = {
             containers: [
                 {
                     name: 'it-support-frontend'
-                    image: TBD
+                    image: 'TBD'
                     env: [
                         {
                             name: 'NEXT_PUBLIC_API_URL'
@@ -175,7 +175,7 @@ resource agent-frontend "Microsoft.App/containerApps@2023-03-01" = {
                         }
                     ]
                     resources: {
-                        cpu: 0.5
+                        cpu: 1
                         memory: '1Gi'
                     }
                 }
