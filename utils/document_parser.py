@@ -2,6 +2,7 @@ import pdfplumber
 from pathlib import Path
 from typing import List, Dict, Any
 from bs4 import BeautifulSoup
+import re
 
 class PDFParser:
     def __init__(self, pdf_path: str):
@@ -14,8 +15,9 @@ class PDFParser:
         with pdfplumber.open(self.pdf_path) as pdf:
             for page in pdf.pages:
                 page_text = page.extract_text()
-                if page_text:
+                if not page_text:
                     text += page_text + "\n"
+                
         return text
     
     def extract_tables(self) -> List[List[List[str]]]:
@@ -48,22 +50,38 @@ class HTMLParser:
         """Extract clean text from HTML"""
         soup = BeautifulSoup(self.html_source, 'html.parser')
         
-        # Remove script and style elements
-        for script in soup(["script", "style"]):
-            script.decompose()
-            
-        # Get text and clean it up
+        for tag in soup.find_all(["head", "script", "style"]):
+            tag.decompose()
+
+        # this doesn't give relevant info
+        for div_id in ["breadcrumb-section", "footer"]:
+            for div in soup.find_all("div", id=div_id):
+                div.decompose()
+
+        for br in soup.find_all("br"):
+            br.replace_with("\n")
+
+        for li in soup.find_all("li"):
+            li.insert_before("- ")
+            li.append("\n")
+
+        # split at block level, otherwise it'll break on inline tags too (like italics)
+        block_tags = ['p', 'div', 'h1','h2','h3','h4','h5','h6', 'li']
+        for tag in soup.find_all(block_tags):
+            if not tag.get_text(strip=True).endswith("\n"):
+                tag.append("\n")
+
         text = soup.get_text()
         
-        # Clean up whitespace
+        # gets rid of extra whitespace
         lines = (line.strip() for line in text.splitlines())
-        chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
-        text = '\n'.join(chunk for chunk in chunks if chunk)
+        text = "\n".join(line for line in lines if line)
+
+        text = re.sub(r'\n+', '\n', text)  # collapse multiple newlines
         
         return text
     
     def extract_tables(self) -> List[List[List[str]]]:
-        """Extract tables from HTML"""
         soup = BeautifulSoup(self.html_source, 'html.parser')
         tables = []
         
@@ -74,7 +92,7 @@ class HTMLParser:
             for row in rows:
                 cells = row.find_all(['td', 'th'])
                 row_data = [cell.get_text(strip=True) for cell in cells]
-                if row_data:  # Only add non-empty rows
+                if row_data:  # only add non-empty rows
                     table_data.append(row_data)
             
             if table_data:
@@ -83,7 +101,6 @@ class HTMLParser:
         return tables
 
 def parse_document(file_path: str) -> Dict[str, Any]:
-    """Parse either PDF or HTML file based on extension"""
     path = Path(file_path)
     extension = path.suffix.lower()
     
@@ -106,28 +123,37 @@ if __name__ == "__main__":
     import sys
     
     if len(sys.argv) > 1:
-        input_source = sys.argv[1]
+        input_source = Path(sys.argv[1])
     else:
         print("No path to the file or URL was specified.")
         sys.exit(1)
+
+    script_dir = Path(__file__).parent
+    output_folder = script_dir / "out"
+    output_folder.mkdir(exist_ok=True)
     
     try:
-        print(f"Parsing file: {input_source}")
-        result = parse_document(input_source)
-        input_path = Path(input_source)
-        output_name = input_path.stem + '.txt'
+        if input_source.is_dir(): # if given the folder with html pages
+            files = list(input_source.glob("*.htm")) + list(input_source.glob("*.html"))
+            if not files:
+                print("There were no HTML files in the folder.")
+                sys.exit(0)
 
-        # Create output directory and file
-        script_dir = Path(__file__).parent
-        output_folder = script_dir / "out"
-        output_folder.mkdir(exist_ok=True)
-        output = output_folder / output_name
+            for file in files:
+                result = parse_document(str(file))
+                output_name = file.stem + '.txt'
+                output = output_folder / output_name
 
-        with open(output, 'w', encoding='utf-8') as file:
-            file.write(result['text'])
-        
-        print(f"Text saved to {output}.")
-        print(f"Found {len(result['tables'])} tables.")
+                with open(output, 'w', encoding='utf-8') as out:
+                    out.write(result['text'])
+
+        elif input_source.is_file(): # if given the pdf
+            result = parse_document(str(input_source))
+            output_name = input_source.stem + '.txt'
+            output = output_folder / output_name
+
+            with open(output, 'w', encoding='utf-8') as out:
+                out.write(result['text'])
             
     except FileNotFoundError as e:
         print(f"Error: {e}")
