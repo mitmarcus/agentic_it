@@ -34,10 +34,9 @@ class HTMLParser:
         self.html_source = html_source
         if not self.html_source:
             raise FileNotFoundError("HTML source not found.")
-        
+
     @classmethod
     def from_file(cls, html_path: str):
-        """Create parser from local HTML file"""
         html_file = Path(html_path)
         if not html_file.exists():
             raise FileNotFoundError(f"HTML file not found at {html_path}.")
@@ -46,8 +45,15 @@ class HTMLParser:
             content = file.read()
         return cls(content)
     
+    def get_title(self) -> str:
+        soup = BeautifulSoup(self.html_source, 'html.parser')
+        title = soup.find('title')
+        title = re.sub(r"^Public\s*:\s*", "", title.get_text(strip=True))
+        title = re.sub(r'[\\/*?:"<>|]', "_", title) # sanitize for file names
+        return title
+
+    
     def extract_text(self) -> str:
-        """Extract clean text from HTML"""
         soup = BeautifulSoup(self.html_source, 'html.parser')
         
         for tag in soup.find_all(["head", "script", "style"]):
@@ -106,12 +112,18 @@ def parse_document(file_path: str) -> Dict[str, Any]:
     
     if extension == '.pdf':
         parser = PDFParser(file_path)
+        title = path.stem
     elif extension in ['.html', '.htm']:
         parser = HTMLParser.from_file(file_path)
+        try:
+            title = parser.get_title()
+        except Exception:
+            title = path.stem
     else:
         raise ValueError(f"Unsupported file type: {extension}. Supported types: .pdf, .html, .htm")
     
     return {
+        'title': title,
         'text': parser.extract_text(),
         'tables': parser.extract_tables(),
         'file_type': extension
@@ -141,7 +153,7 @@ if __name__ == "__main__":
 
             for file in files:
                 result = parse_document(str(file))
-                output_name = file.stem + '.txt'
+                output_name = result['title'] + '.txt'
                 output = output_folder / output_name
 
                 with open(output, 'w', encoding='utf-8') as out:
