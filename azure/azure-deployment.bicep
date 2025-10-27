@@ -9,7 +9,7 @@ param location string = 'TBD'
 param resourceGroupName string= 'TBD' // might not be needed
 param envId string = 'subscription'
 
-resource agentDatabase 'Microsoft.App/containerApps@2023-03-01' = {
+resource agentDatabase 'Microsoft.App/containerApps@2024-08-02' = {
     name: 'it-support-chromadb'
     location: location
     properties: {
@@ -82,7 +82,7 @@ resource agentDatabase 'Microsoft.App/containerApps@2023-03-01' = {
 
 // ===
 
-resource agentChatbot 'Microsoft.App/containerApps@2023-03-01' = {
+resource agentChatbot 'Microsoft.App/containerApps@2024-08-02' = {
     name: 'it-support-chatbot'
     location: location
     properties: {
@@ -152,7 +152,7 @@ resource agentChatbot 'Microsoft.App/containerApps@2023-03-01' = {
     }
 }
 
-resource agentFrontend 'Microsoft.App/containerApps@2023-03-01' = {
+resource agentFrontend 'Microsoft.App/containerApps@2024-08-02' = {
     name: 'it-support-frontend'
     location: location
     properties: {
