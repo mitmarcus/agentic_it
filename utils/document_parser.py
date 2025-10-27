@@ -7,22 +7,23 @@ import re
 class PDFParser:
     def __init__(self, pdf_path: str):
         self.pdf_path = Path(pdf_path)
-        if not self.pdf_path.exists():
-            raise FileNotFoundError(f"PDF file not found at {pdf_path}.")
+
+    def _open_pdf(self):
+        return pdfplumber.open(self.pdf_path)
     
     def extract_text(self) -> str:
         text = ""
-        with pdfplumber.open(self.pdf_path) as pdf:
+        with self._open_pdf() as pdf:
             for page in pdf.pages:
                 page_text = page.extract_text()
-                if not page_text:
+                if page_text:
                     text += page_text + "\n"
                 
         return text
     
     def extract_tables(self) -> List[List[List[str]]]:
         tables = []
-        with pdfplumber.open(self.pdf_path) as pdf:
+        with self._open_pdf() as pdf:
             for page in pdf.pages:
                 page_tables = page.extract_tables()
                 if page_tables:
@@ -37,11 +38,7 @@ class HTMLParser:
 
     @classmethod
     def from_file(cls, html_path: str):
-        html_file = Path(html_path)
-        if not html_file.exists():
-            raise FileNotFoundError(f"HTML file not found at {html_path}.")
-        
-        with open(html_file, 'r', encoding='utf-8') as file:
+        with open(html_path, 'r', encoding='utf-8') as file:
             content = file.read()
         return cls(content)
     
@@ -129,8 +126,7 @@ def parse_document(file_path: str) -> Dict[str, Any]:
         'file_type': extension
     }
 
-# ex. document_parser.py "path/to/document.pdf"
-# ex. document_parser.py "path/to/document.html"
+# ex. python document_parser.py "path/to/document.html"
 if __name__ == "__main__":
     import sys
     
