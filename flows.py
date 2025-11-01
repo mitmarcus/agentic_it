@@ -4,6 +4,8 @@ Flows for IT Support Chatbot.
 Flows orchestrate nodes into complete workflows.
 """
 import logging
+from langfuse_tracing import trace_flow, TracingConfig
+
 from cremedelacreme import Flow
 from nodes import (
     # Online query nodes
@@ -25,10 +27,67 @@ from nodes import (
 
 logger = logging.getLogger(__name__)
 
+# Initialize tracing configuration
+try:
+    tracing_config = TracingConfig.from_env()
+    logger.info("Tracing configuration loaded from environment")
+except Exception as e:
+    logger.warning(f"Failed to load tracing configuration: {e}")
+    tracing_config = None
+
 
 # ============================================================================
 # Main Query Flow
 # ============================================================================
+
+@trace_flow(config=tracing_config, flow_name="ITSupportQueryFlow")
+class QueryFlow(Flow):
+    """Main query answering flow with tracing."""
+    def __init__(self):
+        # Create nodes
+        intent_node = IntentClassificationNode()
+        embed_node = EmbedQueryNode()
+        search_node = SearchKnowledgeBaseNode()
+        decision_node = DecisionMakerNode()
+        answer_node = GenerateAnswerNode()
+        clarify_node = AskClarifyingQuestionNode()
+        format_node = FormatFinalResponseNode()
+        
+        # Interactive troubleshooting node
+        troubleshoot_node = InteractiveTroubleshootNode()
+        
+        # Placeholder nodes for not-yet-implemented features
+        search_tickets_node = NotImplementedNode("Ticket search")
+        create_ticket_node = NotImplementedNode("Ticket creation")
+        
+        # Connect nodes
+        # Linear path: intent -> embed -> search
+        _ = intent_node >> embed_node >> search_node
+        
+        # Search can go to decision maker regardless of whether docs found
+        _ = search_node - "docs_found" >> decision_node
+        _ = search_node - "no_docs" >> decision_node
+        
+        # Decision maker routes to different actions
+        _ = decision_node - "answer" >> answer_node
+        _ = decision_node - "clarify" >> clarify_node
+        _ = decision_node - "search_kb" >> embed_node  # Loop back to search again
+        _ = decision_node - "troubleshoot" >> troubleshoot_node
+        _ = decision_node - "search_tickets" >> search_tickets_node
+        _ = decision_node - "create_ticket" >> create_ticket_node
+        
+        # All paths lead to format response
+        _ = answer_node >> format_node
+        _ = clarify_node >> format_node
+        _ = troubleshoot_node >> format_node
+        _ = search_tickets_node >> format_node
+        _ = create_ticket_node >> format_node
+        
+        # Initialize Flow with start node
+        super().__init__(start=intent_node)
+        
+        logger.info("Query flow created with tracing")
+
 
 def create_query_flow() -> Flow:
     """
@@ -46,57 +105,33 @@ def create_query_flow() -> Flow:
     5. Format final response
     
     Returns:
-        Configured Flow instance
+        Configured Flow instance with tracing
     """
-    # Create nodes
-    intent_node = IntentClassificationNode()
-    embed_node = EmbedQueryNode()
-    search_node = SearchKnowledgeBaseNode()
-    decision_node = DecisionMakerNode()
-    answer_node = GenerateAnswerNode()
-    clarify_node = AskClarifyingQuestionNode()
-    format_node = FormatFinalResponseNode()
-    
-    # Interactive troubleshooting node
-    troubleshoot_node = InteractiveTroubleshootNode()
-    
-    # Placeholder nodes for not-yet-implemented features
-    search_tickets_node = NotImplementedNode("Ticket search")
-    create_ticket_node = NotImplementedNode("Ticket creation")
-    
-    # Connect nodes
-    # Linear path: intent -> embed -> search
-    _ = intent_node >> embed_node >> search_node
-    
-    # Search can go to decision maker regardless of whether docs found
-    _ = search_node - "docs_found" >> decision_node
-    _ = search_node - "no_docs" >> decision_node
-    
-    # Decision maker routes to different actions
-    _ = decision_node - "answer" >> answer_node
-    _ = decision_node - "clarify" >> clarify_node
-    _ = decision_node - "search_kb" >> embed_node  # Loop back to search again
-    _ = decision_node - "troubleshoot" >> troubleshoot_node
-    _ = decision_node - "search_tickets" >> search_tickets_node
-    _ = decision_node - "create_ticket" >> create_ticket_node
-    
-    # All paths lead to format response
-    _ = answer_node >> format_node
-    _ = clarify_node >> format_node
-    _ = troubleshoot_node >> format_node
-    _ = search_tickets_node >> format_node
-    _ = create_ticket_node >> format_node
-    
-    # Create flow starting with intent classification
-    flow = Flow(start=intent_node)
-    
-    logger.info("Query flow created")
-    return flow
+    return QueryFlow()
 
 
 # ============================================================================
 # Offline Indexing Flow
 # ============================================================================
+
+@trace_flow(config=tracing_config, flow_name="ITSupportIndexingFlow")
+class IndexingFlow(Flow):
+    """Offline document indexing flow with tracing."""
+    def __init__(self):
+        # Create nodes
+        load_node = LoadDocumentsNode()
+        chunk_node = ChunkDocumentsNode()
+        embed_node = EmbedDocumentsNode()
+        store_node = StoreInChromaDBNode()
+        
+        # Connect in sequence
+        _ = load_node >> chunk_node >> embed_node >> store_node
+        
+        # Initialize Flow with start node
+        super().__init__(start=load_node)
+        
+        logger.info("Indexing flow created with tracing")
+
 
 def create_indexing_flow() -> Flow:
     """
@@ -109,53 +144,50 @@ def create_indexing_flow() -> Flow:
     4. Store in ChromaDB
     
     Returns:
-        Configured Flow instance
+        Configured Flow instance with tracing
     """
-    # Create nodes
-    load_node = LoadDocumentsNode()
-    chunk_node = ChunkDocumentsNode()
-    embed_node = EmbedDocumentsNode()
-    store_node = StoreInChromaDBNode()
-    
-    # Connect in sequence
-    _ = load_node >> chunk_node >> embed_node >> store_node
-    
-    # Create flow
-    flow = Flow(start=load_node)
-    
-    logger.info("Indexing flow created")
-    return flow
+    return IndexingFlow()
 
 
 # ============================================================================
 # Simplified Query Flow (for testing/development)
 # ============================================================================
 
+@trace_flow(config=tracing_config, flow_name="ITSupportSimpleQueryFlow")
+class SimpleQueryFlow(Flow):
+    """Simplified query flow for testing with tracing."""
+    def __init__(self):
+        # Create nodes
+        intent_node = IntentClassificationNode()
+        embed_node = EmbedQueryNode()
+        search_node = SearchKnowledgeBaseNode()
+        answer_node = GenerateAnswerNode()
+        format_node = FormatFinalResponseNode()
+        
+        # Simple linear flow
+        _ = intent_node >> embed_node >> search_node
+        
+        # Both search outcomes go to answer
+        _ = search_node - "docs_found" >> answer_node
+        _ = search_node - "no_docs" >> answer_node
+        
+        _ = answer_node >> format_node
+        
+        # Initialize Flow with start node
+        super().__init__(start=intent_node)
+        
+        logger.info("Simple query flow created with tracing")
+
+
 def create_simple_query_flow() -> Flow:
     """
     Useful for testing RAG pipeline without agent routing.
     Goes straight from search to answer.
+    
+    Returns:
+        Configured Flow instance with tracing
     """
-    # Create nodes
-    intent_node = IntentClassificationNode()
-    embed_node = EmbedQueryNode()
-    search_node = SearchKnowledgeBaseNode()
-    answer_node = GenerateAnswerNode()
-    format_node = FormatFinalResponseNode()
-    
-    # Simple linear flow
-    _ = intent_node >> embed_node >> search_node
-    
-    # Both search outcomes go to answer
-    _ = search_node - "docs_found" >> answer_node
-    _ = search_node - "no_docs" >> answer_node
-    
-    _ = answer_node >> format_node
-    
-    flow = Flow(start=intent_node)
-    
-    logger.info("Simple query flow created")
-    return flow
+    return SimpleQueryFlow()
 
 
 # ============================================================================
