@@ -21,3 +21,7 @@ pytest-asyncio==1.2.0
 
 # PDF parsing
 pypdf==6.1.1
+
+# Tracing - LangFuse
+langfuse==3.8.1
+pydantic==2.12.0  # For data validation and serialization
