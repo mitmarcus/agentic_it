@@ -16,7 +16,7 @@ class TracingConfig:
     langfuse_secret_key: Optional[str] = None
     langfuse_public_key: Optional[str] = None
     langfuse_host: Optional[str] = None
-
+    
     # Tracing configuration
     debug: bool = False
     trace_inputs: bool = True
@@ -59,8 +59,6 @@ class TracingConfig:
             trace_exec=os.getenv("TRACE_EXEC", "true").lower() == "true",
             trace_post=os.getenv("TRACE_POST", "true").lower() == "true",
             trace_errors=os.getenv("TRACE_ERRORS", "true").lower() == "true",
-            session_id=os.getenv("SESSION_ID"),
-            user_id=os.getenv("USER_ID"),
         )
     
     def validate(self) -> bool:
