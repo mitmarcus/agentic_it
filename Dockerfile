@@ -17,6 +17,9 @@ COPY requirements.txt .
 # Install Python dependencies
 RUN pip install -r requirements.txt
 
+# Install Playwright browser for status querying
+RUN playwright install --with-deps chromium
+
 # Copy application code
 COPY utils/ ./utils/
 COPY cremedelacreme/ ./cremedelacreme/
