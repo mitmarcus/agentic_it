@@ -6,12 +6,13 @@ Flows orchestrate nodes into complete workflows.
 import logging
 from langfuse_tracing import trace_flow, TracingConfig
 
-from cremedelacreme import Flow
+from cremedelacreme import AsyncFlow, Flow
 from nodes import (
     # Online query nodes
     IntentClassificationNode,
     EmbedQueryNode,
     SearchKnowledgeBaseNode,
+    StatusQueryNode,
     DecisionMakerNode,
     GenerateAnswerNode,
     AskClarifyingQuestionNode,
@@ -61,7 +62,7 @@ class QueryFlow(Flow):
         create_ticket_node = NotImplementedNode("Ticket creation")
         
         # Connect nodes
-        # Linear path: intent -> embed -> search
+        # Linear path: intent -> embed -> check network status -> search
         _ = intent_node >> embed_node >> search_node
         
         # Search can go to decision maker regardless of whether docs found
@@ -148,6 +149,35 @@ def create_indexing_flow() -> Flow:
     """
     return IndexingFlow()
 
+# ============================================================================
+# Network Status Flow
+# ============================================================================
+
+@trace_flow(config=tracing_config, flow_name="NetworkStatusFlow")
+class NetworkStatusFlow(AsyncFlow):
+    """Checking network status flow."""
+    def __init__(self):
+        # Create nodes
+        status_node = StatusQueryNode()
+        
+        # Connect in sequence
+        _ = status_node
+        
+        # Initialize Flow with start node
+        super().__init__(start=status_node)
+        
+        logger.info("Network status flow created with tracing")
+
+
+def create_network_status_flow() -> Flow:
+    """
+    Create the network status flow.
+    
+    Returns:
+        Configured Flow instance with tracing
+    """
+    return NetworkStatusFlow()
+
 
 # ============================================================================
 # Simplified Query Flow (for testing/development)
@@ -160,12 +190,13 @@ class SimpleQueryFlow(Flow):
         # Create nodes
         intent_node = IntentClassificationNode()
         embed_node = EmbedQueryNode()
+        query_node = StatusQueryNode()
         search_node = SearchKnowledgeBaseNode()
         answer_node = GenerateAnswerNode()
         format_node = FormatFinalResponseNode()
         
         # Simple linear flow
-        _ = intent_node >> embed_node >> search_node
+        _ = intent_node >> embed_node >> query_node >> search_node
         
         # Both search outcomes go to answer
         _ = search_node - "docs_found" >> answer_node
@@ -208,6 +239,7 @@ def get_flow(flow_type: str = "query") -> Flow:
         ValueError: If flow_type is unknown
     """
     flows = {
+        "status": create_network_status_flow,
         "query": create_query_flow,
         "indexing": create_indexing_flow,
         "simple": create_simple_query_flow
@@ -224,6 +256,9 @@ if __name__ == "__main__":
     print("Testing flow creation...")
     
     try:
+        status_flow = create_network_status_flow()
+        print(f"✓ Status flow created: {status_flow}")
+
         query_flow = create_query_flow()
         print(f"✓ Query flow created: {query_flow}")
         

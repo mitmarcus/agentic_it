@@ -10,7 +10,7 @@ import os
 import yaml
 import logging
 from typing import Any, Dict, List
-from cremedelacreme import Node, BatchNode, AsyncNode
+from cremedelacreme import AsyncNode, Node, BatchNode
 
 # Import utilities
 from utils.call_llm_groq import call_llm
@@ -20,6 +20,7 @@ from utils.conversation_memory import conversation_memory
 from utils.chromadb_client import query_collection
 from utils.chunker import truncate_to_token_limit
 from utils.redactor import redact_text, redact_dict
+from utils.status_retrieval import format_status_results
 
 # Configure logging
 logging.basicConfig(
@@ -200,6 +201,7 @@ class DecisionMakerNode(Node):
             "user_query": shared.get("user_query", ""),
             "user_os": shared.get("user_os", "unknown"),
             "intent": shared.get("intent", {}),
+            "network_status": format_status_results(shared.get("status_results", [])),
             "conversation_history": history_str,
             "doc_summaries": doc_summaries,
             "workflow_status": workflow_status,
@@ -215,6 +217,9 @@ User Query: "{context['user_query']}"
 User System: {context.get('user_os', 'unknown')}
 Intent Classification: {context['intent'].get('intent', 'unknown')} (confidence: {context['intent'].get('confidence', 0):.2f})
 Conversation Turn: {context['turn_count']}
+
+Network Status:
+{context['network_status']}
 
 Retrieved Documents:
 {context['doc_summaries'] if context['doc_summaries'] else 'No documents retrieved'}
@@ -254,6 +259,7 @@ analyze the context and decide the next action to help the employee efficiently.
     When to use: Query is ambiguous or missing critical information
 
 ### DECISION RULES
+- If any active network issues match user's issue → answer
 - IMPORTANT: You have searched {context['search_count']} times (max: {context['max_searches']}). If at max, you MUST choose 'answer' or 'clarify', NOT 'search_kb'
 - If confidence < 0.7 in understanding query → clarify
 - If intent = factual + good docs found → answer
@@ -358,6 +364,7 @@ class GenerateAnswerNode(Node):
             "user_query": shared.get("user_query", ""),
             "user_os": shared.get("user_os", "unknown"),
             "rag_context": shared.get("rag_context", ""),
+            "network_status": shared.get("status_results", ""),
             "conversation_history": history_str
         }
     
@@ -370,6 +377,9 @@ You are a helpful IT support assistant. Provide accurate, concise answers based 
 
 ### USER INFORMATION
 Operating System: {user_os}
+
+### COMPANY NETWORK STATUS
+{context['network_status'] if context['network_status'] else 'No company network status information available.'}
 
 ### CONTEXT FROM KNOWLEDGE BASE
 {context['rag_context'] if context['rag_context'] else 'No relevant documents found in knowledge base.'}
@@ -389,9 +399,10 @@ Operating System: {user_os}
    - For macOS: Use Mac-specific paths, commands, and UI elements
    - For Linux: Use Linux-specific commands and paths
 5. If the user asks about their OS, tell them: "You are using {user_os}"
-6. If context insufficient, say so and offer to create a ticket
-7. NEVER include sensitive information (passwords, keys, personal data)
-8. Be friendly and professional
+6. If the user's problem matches issues under company network status, say that there are known issues related to the affected service
+7. If context insufficient, say so and offer to create a ticket
+8. NEVER include sensitive information (passwords, keys, personal data)
+9. Be friendly and professional
 
 ### YOUR ANSWER"""
 
@@ -950,4 +961,27 @@ class StoreInChromaDBNode(Node):
         """Log completion."""
         logger.info(f"Successfully indexed {exec_res} chunks in ChromaDB")
         shared["indexed_count"] = exec_res
+        return "default"
+
+# ============================================================================
+# Status Querying Node
+# ============================================================================
+
+class StatusQueryNode(AsyncNode):
+    """Node to check Stibo's status page for network interruptions."""
+    
+    async def prep_async(self, shared: Dict) -> None:
+        """No preparation needed for status query."""
+        return None
+    
+    async def exec_async(self, prep_res: None) -> Dict:
+        """Query the status page."""
+        from utils.status_retrieval import scrape_session
+        
+        results = await scrape_session()
+        return results
+    
+    async def post_async(self, shared: Dict, prep_res: None, exec_res: Dict) -> str:
+        """Write status results to shared store."""
+        shared["status_results"] = exec_res
         return "default"
