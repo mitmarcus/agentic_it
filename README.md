@@ -13,6 +13,7 @@ The system uses agentic decision-making and RAG (Retrieval-Augmented Generation)
 - ✅ **Sensitive Data Redaction**: Automatically removes passwords, emails, API keys
 - ✅ **Docker Compose**: Easy deployment with containerized services
 - ✅ **Interactive Troubleshooting**: Guided step-by-step workflows
+- ✅ **Observability & Tracing**: Full workflow observability with Langfuse integration
 - 🚧 **Jira Integration**: Ticket creation and search
 - 🚧 **Major Incident Detection**: Alerts about known outages
 
@@ -21,6 +22,7 @@ The system uses agentic decision-making and RAG (Retrieval-Augmented Generation)
 - Docker and Docker Compose
 - API Keys:
   - Groq API key (free at https://console.groq.com)
+  - (Optional) Langfuse API keys for tracing (free at https://cloud.langfuse.com)
 
 ## 🔧 Installation
 
@@ -31,8 +33,9 @@ git clone https://github.com/mitmarcus/agentic_it
 cd agentic_it
 
 # Copy and configure environment variables
-cp .env.example .env
+cp .env.sample .env
 # Edit .env and add your GROQ_API_KEY
+# (Optional) Add LANGFUSE_* credentials for tracing
 ```
 
 ### 2. Start Services
@@ -115,7 +118,7 @@ python test_chatbot.py
    - `answer`: Generate response using retrieved docs
    - `clarify`: Ask for more details
    - `search_kb`: Search again with refined query
-   - `troubleshoot`: Start guided workflow 
+   - `troubleshoot`: Start guided workflow
    - `create_ticket`: Create Jira ticket (not yet implemented)
 5. **Generate Answer**: Uses Groq LLM with RAG context
 6. **Format Response**: Prepares final response for user
@@ -154,6 +157,42 @@ tail -f logs/app.log
 docker-compose logs -f chatbot
 docker-compose logs -f chromadb
 ```
+
+### 🔍 Workflow Tracing with Langfuse
+
+The system includes comprehensive workflow observability using [Langfuse](https://langfuse.com/). This provides:
+
+- **Flow-level tracing**: Start/end times, input/output data for entire workflows
+- **Node-level observability**: Detailed tracking of each node's prep/exec/post phases
+- **Error tracking**: Automatic capture of exceptions and stack traces
+- **Performance metrics**: Execution times for each phase
+- **Input/Output inspection**: View data flowing through each node
+
+#### Setup Langfuse Tracing
+
+1. **Get Langfuse credentials** (free tier available):
+
+   - Sign up at https://cloud.langfuse.com
+   - Or self-host: https://langfuse.com/docs/deployment/self-host
+
+2. **Configure environment variables** in `.env`:
+
+   ```env
+   LANGFUSE_SECRET_KEY=sk-lf-...
+   LANGFUSE_PUBLIC_KEY=pk-lf-...
+   LANGFUSE_HOST=https://cloud.langfuse.com
+   TRACING_DEBUG=false
+   ```
+
+3. **Run your workflows** - tracing happens automatically!
+
+4. **View traces** in your Langfuse dashboard to:
+   - Debug flow execution
+   - Optimize performance bottlenecks
+   - Track errors and retries
+   - Analyze data transformations
+
+For more details, see [tracing/README.md](tracing/README.md).
 
 ## 🔒 Security
 
