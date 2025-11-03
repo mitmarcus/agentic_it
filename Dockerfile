@@ -20,6 +20,7 @@ RUN pip install -r requirements.txt
 # Copy application code
 COPY utils/ ./utils/
 COPY cremedelacreme/ ./cremedelacreme/
+COPY langfuse_tracing/ ./langfuse_tracing/
 COPY nodes.py .
 COPY flows.py .
 COPY models.py .
