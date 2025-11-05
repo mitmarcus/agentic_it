@@ -1,38 +1,45 @@
 """
-Document chunking utilities for text processing (TXT-only).
+Document chunking utilities for text processing (TXT-only) using local embeddings.
 """
 import os
 from typing import Dict, Any, List
 from pathlib import Path
 import spacy
-from sentence_transformers import SentenceTransformer
 import numpy as np
 import json
 
-# Load spaCy model and embedding model (may download the latter once)
+from embedding_local import get_embedding
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
+
+# Load spaCy model globally
 nlp = spacy.load("en_core_web_sm")
-embed_model = SentenceTransformer(os.getenv("EMBED_MODEL", "sentence-transformers/all-MiniLM-L6-v2"))
 
 # Defaults
 _DEFAULT_CHUNK_SIZE = int(os.getenv("INGESTION_CHUNK_SIZE", 1000))
 _DEFAULT_CHUNK_OVERLAP = int(os.getenv("INGESTION_CHUNK_OVERLAP", 100))
+_DEFAULT_SIMILARITY_THRESHOLD = float(os.getenv("INGESTION_SIMILARITY_THRESHOLD", 0.72))
+
+
+def get_embeddings_batch(sentences: List[str]) -> np.ndarray:
+    embs = [get_embedding(sent) for sent in sentences]
+    embs_array = np.array(embs, dtype=np.float32)
+    norms = np.linalg.norm(embs_array, axis=1, keepdims=True)
+    embs_array = embs_array / np.maximum(norms, 1e-10)
+    return embs_array
+
 
 def semantic_chunk_sentences(
     sentences: List[str],
-    max_chunk_tokens: int = int(os.getenv("INGESTION_CHUNK_SIZE", 1000)),
-    similarity_threshold: float = 0.52,
-    embed_batch_size: int = 64
+    max_chunk_tokens: int = _DEFAULT_CHUNK_SIZE,
+    similarity_threshold: float = 0.52
 ) -> List[str]:
     if not sentences:
         return []
 
-    sent_embs = embed_model.encode(
-        sentences,
-        batch_size=embed_batch_size,
-        convert_to_numpy=True,
-        normalize_embeddings=True
-    )
-
+    sent_embs = get_embeddings_batch(sentences)
     chunks: List[str] = []
     current_chunk_sents: List[str] = []
     current_embs: List[np.ndarray] = []
@@ -45,8 +52,8 @@ def semantic_chunk_sentences(
             current_embs.append(emb)
             continue
 
-        centroid = np.mean(np.stack(current_embs, axis=0), axis=0)
-        sim = float(np.dot(emb, centroid))  # cosine since normalized
+        centroid = np.mean(np.array(current_embs), axis=0)
+        sim = float(np.dot(emb, centroid))
 
         tentative_text = " ".join(current_chunk_sents + [sent])
         tentative_tokens = estimate_tokens(tentative_text)
@@ -64,9 +71,9 @@ def semantic_chunk_sentences(
 
     return chunks
 
+
 def chunk_text(
     text: str,
-    *,
     chunk_size: int = _DEFAULT_CHUNK_SIZE,
     chunk_overlap: int = _DEFAULT_CHUNK_OVERLAP,
     similarity_threshold: float = 0.6
@@ -74,9 +81,8 @@ def chunk_text(
     if not text:
         return []
 
-    # quick line-based fallback for files with many short lines
     lines = [line.strip() for line in text.splitlines() if line.strip()]
-    short_line_ratio = sum(1 for line in lines if len(line) < 50) / max(len(lines), 1)
+    short_line_ratio = sum(1 for line in lines if len(line) < 50) / len(lines)
     if short_line_ratio > 0.6:
         chunks: List[str] = []
         current_chunk: List[str] = []
@@ -95,43 +101,37 @@ def chunk_text(
             chunks.append(" ".join(current_chunk))
         return chunks
 
-    # sentence-based semantic chunking
     doc = nlp(text)
     sentences = [sent.text.strip() for sent in doc.sents if sent.text.strip()]
-
     chunks = semantic_chunk_sentences(
         sentences,
         max_chunk_tokens=chunk_size,
         similarity_threshold=similarity_threshold
     )
 
-    # remove trivially short chunks
     chunks = [c for c in chunks if len(c.strip()) > 10]
 
-    # optional sentence-overlap (by naive split on '. ')
     if chunk_overlap > 0:
         final_chunks: List[str] = []
         for i, chunk in enumerate(chunks):
             if i == 0:
                 final_chunks.append(chunk)
                 continue
-            prev_sents = chunks[i - 1].split('. ')
+            prev_sents = list(nlp(chunks[i - 1]).sents)
             overlap_n = min(len(prev_sents), chunk_overlap)
-            overlap_text = '. '.join(prev_sents[-overlap_n:]).strip()
-            if overlap_text and not overlap_text.endswith('.'):
-                overlap_text += '.'
+            overlap_text = " ".join([s.text for s in prev_sents[-overlap_n:]]).strip()
             combined = f"{overlap_text} {chunk}".strip() if overlap_text else chunk
             final_chunks.append(combined)
         return final_chunks
 
     return chunks
 
+
 def chunk_documents(
     documents: List[Dict[str, Any]],
-    *,
     chunk_size: int = _DEFAULT_CHUNK_SIZE,
     chunk_overlap: int = _DEFAULT_CHUNK_OVERLAP,
-    similarity_threshold: float = float(os.getenv("INGESTION_SIMILARITY_THRESHOLD", 0.72))
+    similarity_threshold: float = _DEFAULT_SIMILARITY_THRESHOLD
 ) -> List[Dict[str, Any]]:
     all_chunks: List[Dict[str, Any]] = []
 
@@ -165,20 +165,13 @@ def chunk_documents(
 
     return all_chunks
 
+
 def estimate_tokens(text: str) -> int:
-    if not text:
-        return 0
-    return len(nlp(text))
+    return len(text.split()) if text else 0
+
 
 if __name__ == "__main__":
-    from dotenv import load_dotenv
-
-    load_dotenv()
-
     out_folder = Path(__file__).parent / "out"
-    chunk_size = int(os.getenv("INGESTION_CHUNK_SIZE", _DEFAULT_CHUNK_SIZE))
-    chunk_overlap = int(os.getenv("INGESTION_CHUNK_OVERLAP", _DEFAULT_CHUNK_OVERLAP))
-    ignore_files = {"confidential_contacts.txt"}
 
     if not out_folder.exists():
         raise FileNotFoundError(f"Could not find 'out' folder: {out_folder}")
@@ -189,14 +182,10 @@ if __name__ == "__main__":
         raise SystemExit(0)
 
     for txt_file in txt_files:
-        if txt_file.name in ignore_files:
-            print(f"Skipping confidential file: {txt_file.name}")
-            continue
-
         print(f"Loading and chunking: {txt_file.name}")
         text = txt_file.read_text(encoding="utf-8", errors="ignore")
         docs = [{"content": text, "metadata": {"source": str(txt_file), "file_type": ".txt"}}]
-        chunks = chunk_documents(docs, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+        chunks = chunk_documents(docs)
 
         print(f"Created {len(chunks)} chunks from {txt_file.name}")
 
