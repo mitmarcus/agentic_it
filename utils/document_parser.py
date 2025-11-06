@@ -12,13 +12,50 @@ class PDFParser:
         return pdfplumber.open(self.pdf_path)
     
     def extract_text(self) -> str:
-        text = ""
+        result = []
         with self._open_pdf() as pdf:
             for page in pdf.pages:
-                page_text = page.extract_text()
-                if page_text:
-                    text += page_text + "\n"
+                if not page.chars: # skips blanks
+                    continue
+
+                word = []
+                prev_style = None
+                prev_x = None
+                prev_y = None
                 
+                for char in page.chars:
+                    font = char.get('fontname', '').lower()
+                    style = ('bold' in font, 'italic' in font or 'oblique' in font)
+                    
+                    # new word if different line/space/style change
+                    new_line = prev_y and abs(char['top'] - prev_y) > 5
+                    space = prev_x and (char['x0'] - prev_x) > 3
+                    
+                    if word and (new_line or space or style != prev_style):
+                        result.append(self._format(word, prev_style))
+                        result.append('\n' if new_line else ' ')
+                        word = []
+                    
+                    word.append(char['text'])
+                    prev_style = style
+                    prev_x = char.get('x1')
+                    prev_y = char['top']
+                
+                if word:
+                    result.append(self._format(word, prev_style))
+                result.append('\n\n')
+        
+        return ''.join(result)
+    
+    def _format(self, chars, style):
+        text = ''.join(chars)
+        bold, italic = style
+        if bold and italic:
+            return f"***{text}***"
+        if bold:
+            return f"**{text}**"
+        if italic:
+            return f"*{text}*"
         return text
     
     def extract_tables(self) -> List[List[List[str]]]:
@@ -67,6 +104,21 @@ class HTMLParser:
         for li in soup.find_all("li"):
             li.insert_before("- ")
             li.append("\n")
+
+        # convert style tags so they don't get removed when beautifulsoup get_text()s it
+        inline_tags = {
+            'strong': ('**', '**'),
+            'b': ('**', '**'),
+            'em': ('*', '*'),
+            'i': ('*', '*'),
+            'u': ('_', '_'),
+        }
+
+        for tag_name, (start_marker, end_marker) in inline_tags.items():
+            for tag in soup.find_all(tag_name):
+                tag.insert_before(start_marker)
+                tag.insert_after(end_marker)
+                tag.unwrap()
 
         # split at block level, otherwise it'll break on inline tags too (like italics)
         block_tags = ['p', 'div', 'h1','h2','h3','h4','h5','h6', 'li']
