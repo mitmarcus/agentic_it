@@ -59,8 +59,6 @@ class TracingConfig:
             trace_exec=os.getenv("TRACE_EXEC", "true").lower() == "true",
             trace_post=os.getenv("TRACE_POST", "true").lower() == "true",
             trace_errors=os.getenv("TRACE_ERRORS", "true").lower() == "true",
-            session_id=os.getenv("SESSION_ID"),
-            user_id=os.getenv("USER_ID"),
         )
     
     def validate(self) -> bool:
