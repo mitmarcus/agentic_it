@@ -5,8 +5,30 @@ Picked Groq because it has a free api and is actually pretty fast.
 from groq import Groq, RateLimitError
 import os
 import logging
+from typing import Iterator
 
 logger = logging.getLogger(__name__)
+
+
+def _get_groq_client() -> tuple[Groq, str]:
+    """
+    Get configured Groq client and model name.
+    
+    Returns:
+        Tuple of (Groq client, model name)
+        
+    Raises:
+        ValueError: If API key or model not set
+    """
+    api_key = os.getenv("GROQ_API_KEY")
+    if not api_key:
+        raise ValueError("GROQ_API_KEY environment variable not set")
+    
+    model = os.getenv("GROQ_MODEL", "")
+    if not model:
+        raise ValueError("GROQ_MODEL environment variable not set")
+    
+    return Groq(api_key=api_key), model
 
 
 def call_llm(prompt: str, max_tokens: int = 1024) -> str:
@@ -25,15 +47,7 @@ def call_llm(prompt: str, max_tokens: int = 1024) -> str:
         RateLimitError: If rate limit exceeded (for Node retry handling)
         Exception: If API call fails (propagates to Node for retry handling)
     """
-    api_key = os.getenv("GROQ_API_KEY")
-    if not api_key:
-        raise ValueError("GROQ_API_KEY environment variable not set")
-    
-    model = os.getenv("GROQ_MODEL", "")
-    if not model:
-        raise ValueError("GROQ_MODEL environment variable not set")
-
-    client = Groq(api_key=api_key)
+    client, model = _get_groq_client()
     
     try:
         response = client.chat.completions.create(
@@ -53,6 +67,42 @@ def call_llm(prompt: str, max_tokens: int = 1024) -> str:
         # Log rate limit error with details
         logger.error(f"Rate limit exceeded: {e}")
         # Re-raise for Node fallback handling
+        raise
+
+
+def stream_llm(prompt: str, max_tokens: int = 1024) -> Iterator[str]:
+    """
+    Stream response from Groq LLM API.
+    
+    Args:
+        prompt: Text prompt for the LLM
+        max_tokens: Maximum tokens in response (default: 1024)
+    
+    Yields:
+        Text chunks as they're generated
+        
+    Raises:
+        ValueError: If API key not set
+        RateLimitError: If rate limit exceeded
+        Exception: If API call fails
+    """
+    client, model = _get_groq_client()
+    
+    try:
+        stream = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.2,
+            max_tokens=max_tokens,
+            stream=True,  # Enable streaming
+        )
+        
+        for chunk in stream:
+            if hasattr(chunk.choices[0].delta, 'content') and chunk.choices[0].delta.content is not None:
+                yield chunk.choices[0].delta.content
+        
+    except RateLimitError as e:
+        logger.error(f"Rate limit exceeded: {e}")
         raise
 
 # Test standalone call_llm function
