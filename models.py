@@ -16,6 +16,7 @@ class QueryRequest(BaseModel):
     query: str = Field(..., description="User's question or request", min_length=1)
     session_id: Optional[str] = Field(None, description="Optional session ID for conversation continuity")
     user_id: Optional[str] = Field(None, description="Optional user identifier")
+    user_os: Optional[str] = Field(None, description="User's operating system (Windows, macOS, Linux, etc.)")
 
     model_config = {
         "json_schema_extra": {
@@ -23,7 +24,8 @@ class QueryRequest(BaseModel):
                 {
                     "query": "How do I connect to the VPN?",
                     "session_id": "abc123",
-                    "user_id": "john.doe"
+                    "user_id": "john.doe",
+                    "user_os": "Windows 10"
                 }
             ]
         }

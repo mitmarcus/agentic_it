@@ -14,6 +14,7 @@ The system uses agentic decision-making and RAG (Retrieval-Augmented Generation)
 - ✅ **Docker Compose**: Easy deployment with containerized services
 - ✅ **Interactive Troubleshooting**: Guided step-by-step workflows
 - ✅ **Observability & Tracing**: Full workflow observability with Langfuse integration
+- ✅ **OS Detection**: Automatically detects user's OS and provides platform-specific instructions
 - 🚧 **Jira Integration**: Ticket creation and search
 - 🚧 **Major Incident Detection**: Alerts about known outages
 
@@ -73,7 +74,8 @@ curl -X POST http://localhost:8000/query \
   -H "Content-Type: application/json" \
   -d '{
     "query": "How do I set up VPN?",
-    "session_id": "user123"
+    "session_id": "user123",
+    "user_os": "Windows 10/11"
   }'
 ```
 
@@ -138,6 +140,12 @@ python utils/call_llm_groq.py
 python utils/embedding_local.py
 python utils/chromadb_client.py
 
+# Test OS detection
+python test_os_detection.py
+
+# Test OS detection integration (requires running backend)
+python test_os_integration.py
+
 # Test full pipeline
 python test_chatbot.py
 
@@ -201,3 +209,32 @@ For more details, see [tracing/README.md](tracing/README.md).
 - ✅ Environment-based secrets management
 - ✅ CORS restrictions
 - ⚠️ Add authentication/authorization for production use
+
+## 🖥️ OS Detection
+
+The chatbot automatically detects the user's operating system and provides platform-specific instructions.
+
+**Supported Platforms:**
+
+- Windows (7, 8, 10, 11)
+- macOS (Catalina, Big Sur, Monterey, Ventura, Sonoma, Sequoia)
+- Linux (Ubuntu, Fedora, Debian, CentOS, Arch, Mint)
+- iOS and Android (mobile-optimized responses)
+
+**How it works:**
+
+1. Frontend detects OS from browser's user agent
+2. OS information is sent with each query
+3. AI tailors responses with OS-specific commands, shortcuts, and paths
+
+**Example queries:**
+
+- "What OS am I using?" → Tells you your detected OS
+- "How do I open settings?" → Provides OS-specific instructions
+- "How do I check my network information?" → Shows platform-specific commands
+
+See [docs/OS_DETECTION.md](docs/OS_DETECTION.md) for detailed documentation.
+
+```
+
+```
