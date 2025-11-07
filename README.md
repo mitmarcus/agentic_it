@@ -14,6 +14,7 @@ The system uses agentic decision-making and RAG (Retrieval-Augmented Generation)
 - ✅ **Docker Compose**: Easy deployment with containerized services
 - ✅ **Interactive Troubleshooting**: Guided step-by-step workflows
 - ✅ **Observability & Tracing**: Full workflow observability with Langfuse integration
+- ✅ **OS Detection**: Automatically detects user's OS and provides platform-specific instructions
 - 🚧 **Jira Integration**: Ticket creation and search
 - 🚧 **Major Incident Detection**: Alerts about known outages
 
@@ -73,7 +74,8 @@ curl -X POST http://localhost:8000/query \
   -H "Content-Type: application/json" \
   -d '{
     "query": "How do I set up VPN?",
-    "session_id": "user123"
+    "session_id": "user123",
+    "user_os": "Windows"
   }'
 ```
 
