@@ -2,7 +2,7 @@ name: Testing CI
 
 on:
   push:
-    branches: [main, test-*, feat-*]
+    branches: [test-*, feat-*, fix-*]
   pull_request:
     branches: [main]
 
