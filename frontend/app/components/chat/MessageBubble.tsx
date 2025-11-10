@@ -37,11 +37,11 @@ export function MessageBubble({ message }: { message: Message }) {
       <div
         className={`max-w-[680px] px-5 py-4 rounded-2xl relative border shadow-[0_6px_18px_rgba(15,23,42,0.04)] ${
           isUser
-            ? "ml-auto bg-blue-700 text-white rounded-tr-[4px]"
-            : "mr-auto bg-white text-slate-900 border-slate-300/30 rounded-tl-[4px] shadow-none"
+            ? "ml-auto bg-blue-700 text-white rounded-tr-sm"
+            : "mr-auto bg-white text-slate-900 border-slate-300/30 rounded-tl-sm shadow-none"
         }`}
       >
-        <div className="leading-relaxed whitespace-pre-wrap break-words">
+        <div className="leading-relaxed whitespace-pre-wrap wrap-break-word">
           {message.content}
         </div>
         {message.role === "assistant" && message.responseType && (
