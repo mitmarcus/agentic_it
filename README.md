@@ -1,5 +1,9 @@
 # IT Support Chatbot - Agentic RAG System
 
+[![Testing CI](https://github.com/mitmarcus/agentic_it/actions/workflows/testing_ci.yaml/badge.svg)](https://github.com/mitmarcus/agentic_it/actions/workflows/testing_ci.yaml)
+[![Python 3.13](https://img.shields.io/badge/python-3.13-blue)](https://www.python.org/downloads/)
+[![Docker](https://img.shields.io/badge/docker-enabled-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
+
 An intelligent IT support chatbot.
 The system uses agentic decision-making and RAG (Retrieval-Augmented Generation) to answer IT questions, guide troubleshooting, and manage support tickets.
 
@@ -196,10 +200,20 @@ The system includes comprehensive workflow observability using [Langfuse](https:
 
 For more details, see [tracing/README.md](tracing/README.md).
 
+## CI/CD
+
+This project uses GitHub Actions for continuous integration and deployment:
+
+### Automated Checks
+
+- **Test Suite**: All tests in `tests/` directory must pass
+- **Docker Build**: Verifies Docker image builds successfully
+
 ## 🔒 Security
 
 - ✅ Local embeddings (no document content sent to external APIs)
 - ✅ Sensitive data redaction (passwords, emails, API keys)
 - ✅ Environment-based secrets management
 - ✅ CORS restrictions
+- ✅ Automated vulnerability scanning in CI
 - ⚠️ Add authentication/authorization for production use
