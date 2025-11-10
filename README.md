@@ -1,6 +1,9 @@
 # IT Support Chatbot - Agentic RAG System
 
-![CI/CD Pipeline](https://github.com/mitmarcus/agentic_it/actions/workflows/ci.yml/badge.svg?branch=main)
+[![Testing CI](https://github.com/mitmarcus/agentic_it/actions/workflows/testing_ci.yaml/badge.svg)](https://github.com/mitmarcus/agentic_it/actions/workflows/testing_ci.yaml)
+[![Tests](https://img.shields.io/badge/tests-passing-brightgreen)](https://github.com/mitmarcus/agentic_it/actions)
+[![Python 3.13](https://img.shields.io/badge/python-3.13-blue)](https://www.python.org/downloads/)
+[![Docker](https://img.shields.io/badge/docker-enabled-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
 
 An intelligent IT support chatbot.
 The system uses agentic decision-making and RAG (Retrieval-Augmented Generation) to answer IT questions, guide troubleshooting, and manage support tickets.
@@ -198,7 +201,7 @@ The system includes comprehensive workflow observability using [Langfuse](https:
 
 For more details, see [tracing/README.md](tracing/README.md).
 
-## � CI/CD
+## CI/CD
 
 This project uses GitHub Actions for continuous integration and deployment:
 
@@ -206,30 +209,8 @@ This project uses GitHub Actions for continuous integration and deployment:
 
 - **Test Suite**: All tests in `tests/` directory must pass
 - **Docker Build**: Verifies Docker image builds successfully
-- **Frontend Build**: Ensures Next.js frontend compiles
-- **Code Quality**: Linting with Black, flake8, and isort
-- **Security Scan**: Vulnerability checks with Safety and Bandit
 
-### Branch Protection
-
-The `main` branch is protected and requires:
-- ✅ All tests passing
-- ✅ Successful Docker build
-- ✅ At least 1 code review approval
-- ✅ All conversations resolved
-- ✅ Branch up to date with main
-
-### Local Validation
-
-Run this before pushing to check if your code will pass CI:
-
-```bash
-.github/workflows/validate-local.sh
-```
-
-For more details, see [.github/workflows/README.md](.github/workflows/README.md)
-
-## �🔒 Security
+## 🔒 Security
 
 - ✅ Local embeddings (no document content sent to external APIs)
 - ✅ Sensitive data redaction (passwords, emails, API keys)
