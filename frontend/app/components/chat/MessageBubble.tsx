@@ -41,6 +41,27 @@ export function MessageBubble({ message }: { message: Message }) {
             : "mr-auto bg-white text-slate-900 border-slate-300/30 rounded-tl-[4px] shadow-none"
         }`}
       >
+        {/* Attached Files */}
+        {message.attachedFiles && message.attachedFiles.length > 0 && (
+          <div className="mb-3 flex flex-wrap gap-2">
+            {message.attachedFiles.map((file) => (
+              <div
+                key={file.fileId}
+                className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-sm ${
+                  isUser
+                    ? "bg-blue-600 text-white"
+                    : "bg-slate-100 text-slate-700"
+                }`}
+              >
+                <span className="font-medium">📎 {file.filename}</span>
+                <span className="text-xs opacity-75">
+                  ({(file.sizeBytes / 1024).toFixed(1)}KB)
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+
         <div className="leading-relaxed whitespace-pre-wrap break-words">
           {message.content}
         </div>

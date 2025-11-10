@@ -17,6 +17,7 @@ class QueryRequest(BaseModel):
     session_id: Optional[str] = Field(None, description="Optional session ID for conversation continuity")
     user_id: Optional[str] = Field(None, description="Optional user identifier")
     user_os: Optional[str] = Field(None, description="User's operating system (Windows, macOS, Linux, etc.)")
+    attached_files: Optional[list[str]] = Field(None, description="List of file IDs that were attached to this query")
 
     model_config = {
         "json_schema_extra": {
@@ -140,6 +141,33 @@ class HealthResponse(BaseModel):
                     "status": "healthy",
                     "timestamp": "2025-10-07T12:00:00",
                     "version": "1.0.0"
+                }
+            ]
+        }
+    }
+
+
+# ============================================================================
+# File Upload Models
+# ============================================================================
+
+class FileUploadResponse(BaseModel):
+    """Response model for file upload."""
+    file_id: str = Field(..., description="Unique identifier for the uploaded file")
+    filename: str = Field(..., description="Original filename")
+    file_type: str = Field(..., description="Detected file type (pdf, docx, txt, image)")
+    size_bytes: int = Field(..., description="File size in bytes")
+    content_preview: str = Field(..., description="Preview of extracted content (first 200 chars)")
+    
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "file_id": "file_abc123",
+                    "filename": "error_log.txt",
+                    "file_type": "txt",
+                    "size_bytes": 1024,
+                    "content_preview": "Error occurred at 2025-11-07 10:30..."
                 }
             ]
         }
