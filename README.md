@@ -1,7 +1,6 @@
 # IT Support Chatbot - Agentic RAG System
 
 [![Testing CI](https://github.com/mitmarcus/agentic_it/actions/workflows/testing_ci.yaml/badge.svg)](https://github.com/mitmarcus/agentic_it/actions/workflows/testing_ci.yaml)
-[![Tests](https://img.shields.io/badge/tests-passing-brightgreen)](https://github.com/mitmarcus/agentic_it/actions)
 [![Python 3.13](https://img.shields.io/badge/python-3.13-blue)](https://www.python.org/downloads/)
 [![Docker](https://img.shields.io/badge/docker-enabled-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
 
