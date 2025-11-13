@@ -450,16 +450,15 @@ You are the Answer Generator component of an IT support AI agent. Your specific 
 - ACKNOWLEDGE LIMITATIONS: If the available documents don't fully answer the question, state what information you can provide and what's missing.
 
 ### OUTPUT FORMAT
-Respond strictly with a JSON object following this exact structure:
-```json
-{{
-    "text": "The direct answer to the user's question. Use clear formatting with bullet points or numbered steps where appropriate. Be concise and solution-focused.",
-    "metadata": {{
-        "answer_type": "factual_response|step_by_step_instructions|solution_explanation|reference_summary",
-        "sources_used": ["brief_description_of_primary_source", "brief_description_of_supporting_source"],
-        "completeness_score": 0.0-1.0
-    }}
-}}
+Respond strictly with a yaml object following this exact structure:
+```yaml
+text: "<The direct answer to the user's question. Use clear formatting with bullet points or numbered steps where appropriate. Be concise and solution-focused.>"
+metadata:
+  answer_type: "<factual_response|step_by_step_instructions|solution_explanation|reference_summary>"
+  sources_used:
+    - "<brief_description_of_primary_source>"
+    - "<brief_description_of_supporting_source>"
+  completeness_score: "<0.0-1.0>"
 ```
 Provide the most direct and helpful answer possible using only the verified information from available sources."""
 
