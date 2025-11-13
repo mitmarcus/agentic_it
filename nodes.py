@@ -450,7 +450,7 @@ You are the Answer Generator component of an IT support AI agent. Your specific 
 - ACKNOWLEDGE LIMITATIONS: If the available documents don't fully answer the question, state what information you can provide and what's missing.
 
 ### OUTPUT FORMAT
-Respond strictly with a yaml object following this exact structure:
+Respond strictly with a YAML object following this exact structure:
 ```yaml
 text: "<The direct answer to the user's question. Use clear formatting with bullet points or numbered steps where appropriate. Be concise and solution-focused.>"
 metadata:
@@ -573,15 +573,13 @@ Be concise (1-2 sentences) and friendly.
 - CONSIDER INTENT CONFIDENCE: If intent confidence is low, focus on understanding the core issue first
 
 ### OUTPUT FORMAT
-Respond with a JSON object containing your clarifying question and metadata:
+Respond with a YAML object containing your clarifying question and metadata:
 
-```json
-{
-    "clarifying_question": "Your concise, specific question here (1-2 sentences max)",
-    "question_type": "specific_detail|scenario_clarification|symptom_elaboration|multiple_choice",
-    "target_information": "Brief description of what information this question aims to collect",
-    "context_preserved": "How this question relates to the existing conversation"
-}
+```yaml
+clarifying_question: "<Your concise, specific question here (1-2 sentences max)>"
+question_type: "<specific_detail|scenario_clarification|symptom_elaboration|multiple_choice>"
+target_information: "<Brief description of what information this question aims to collect>"
+context_preserved: "<How this question relates to the existing conversation>"
 ```
 Generate the most efficient clarifying question that will provide the missing information needed to resolve the user's issue.
 """
