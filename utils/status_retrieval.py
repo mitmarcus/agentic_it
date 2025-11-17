@@ -64,13 +64,25 @@ async def grab_status(page):
             
             # open modal and check for updates
             await event.click()
-            await page.wait_for_selector('div.content[maintenances]', state='visible')
+            content_locator = page.locator('div.content[maintenances]') # check to see if it's a maintenance thing or not
+            
+            try:
+                await content_locator.wait_for(state='visible', timeout=2000)
+                has_maintenance_content = True
+            except:
+                has_maintenance_content = False
+                print(f"No maintenance content found for: {title}")
+            
             messages = []
-            msg_elements = page.locator('div.update__message')
-            for j in range(await msg_elements.count()):
-                msg = await msg_elements.nth(j).text_content()
-                if msg.strip():
-                    messages.append(msg.strip())
+            
+            if has_maintenance_content:
+                msg_elements = page.locator('div.update__message')
+                for j in range(await msg_elements.count()):
+                    msg = await msg_elements.nth(j).text_content()
+                    if msg.strip():
+                        messages.append(msg.strip())
+            else:
+                messages.append("Not a maintenance event.")
             
             results.append({
                 'title': title.strip(),
@@ -103,7 +115,7 @@ async def scrape_session():
         page = await browser.new_page()
         
         try:
-            await page.goto("https://itstatus.stibo.com")
+            await page.goto(os.getenv("STIBO_STATUS_URL"))
             await page.wait_for_load_state('networkidle')
             
             load_dotenv()
