@@ -210,16 +210,17 @@ class DecisionMakerNode(Node):
     
     def exec(self, context: Dict) -> Dict:
         """Call LLM to decide next action."""
-        prompt = f"""### CONTEXT
+        prompt = f"""
+### CONTEXT
 User Query: "{context['user_query']}"
 User System: {context.get('user_os', 'unknown')}
 Intent Classification: {context['intent'].get('intent', 'unknown')} (confidence: {context['intent'].get('confidence', 0):.2f})
 Conversation Turn: {context['turn_count']}
 
-Retrieved Documents:
+Retrieved Documents from knowledge base:
 {context['doc_summaries'] if context['doc_summaries'] else 'No documents retrieved'}
 
-Conversation History (last 3 messages):
+Conversation History (look at the last 3 messages):
 {context['conversation_history'] if context['conversation_history'] else 'No previous conversation'}
 
 Current Workflow State: {context['workflow_status']}
@@ -228,46 +229,78 @@ Current Workflow State: {context['workflow_status']}
 You are the decision-making component of an IT support chatbot. Your job is to 
 analyze the context and decide the next action to help the employee efficiently.
 
-### AVAILABLE ACTIONS
-[1] search_kb
-    Description: Search knowledge base for more information
-    When to use: Current retrieved docs insufficient or off-topic
-    
-[2] answer
-    Description: Provide direct answer using current context
-    When to use: Have sufficient context to answer confidently
-    
-[3] troubleshoot
-    Description: Start interactive troubleshooting workflow
-    When to use: User has technical problem requiring step-by-step guidance
-    
-[4] search_tickets
-    Description: Search for similar existing tickets (not implemented yet)
-    When to use: Problem seems unresolvable, check if others have same issue
-    
-[5] create_ticket
-    Description: Create new ticket for IT support (not implemented yet)
-    When to use: Cannot resolve issue, needs human intervention
-    
-[6] clarify
-    Description: Ask user for more specific details
-    When to use: Query is ambiguous or missing critical information
+## REASONING PROCESS
+1. Problem Summary: What is the user's core issue in 1-2 sentences?
+2. Known Information: What specific, actionable data do we have? (e.g., error codes, intent, previous steps).
+3. Missing Information: What critical data is absent that blocks a resolution?
+4. Action Evaluation: Which 2-3 actions are most relevant? Briefly weigh their pros/cons given the context.
+5. Final Decision: Select the best action. Justify why it's superior to the alternatives now.
 
-### DECISION RULES
-- IMPORTANT: You have searched {context['search_count']} times (max: {context['max_searches']}). If at max, you MUST choose 'answer' or 'clarify', NOT 'search_kb'
-- If confidence < 0.7 in understanding query → clarify
-- If intent = factual + good docs found → answer
-- If intent = troubleshooting + no workflow started → troubleshoot (or answer if we have docs)
-- If in workflow + stuck → search_tickets
-- If same docs keep appearing across searches → answer with what you have
+### AVAILABLE ACTIONS
+1.  search_kb 
+    Description: Search knowledge base for technical documentation, procedures, or solutions
+    When to use: 
+    - Current document doesn't address the specific error/issue mentioned
+    - You have general information but need specific technical details
+    - User mentions a specific product/feature not covered in current document
+
+2.  answer
+    Description: Provide direct answer or solution using available information
+    When to use:
+    - Current document directly address the user's question
+    - You have step-by-step instructions for the reported issue
+    - Information is recent, relevant, and from authoritative sources
+
+3.  troubleshoot
+    Description: Guide user through diagnostic steps to identify root cause
+    When to use:
+    - User reports a technical issue without clear solution in the knowledge base
+    - Problem requires gathering more system/environment details
+    - Issue could have multiple potential causes needing elimination
+    - User asks "how to fix" rather than "what is"
+
+4.  search_tickets
+    Description: Search existing support tickets for similar unresolved issues
+    When to use:
+    - Troubleshooting has failed to resolve the issue
+    - Multiple users may be experiencing the same problem
+    - Issue appears to be systemic rather than user-specific
+    - Current outage or known issue is suspected
+
+5.  create_ticket
+    Description: Escalate to human support agent with all gathered context
+    When to use:
+    - All self-service options have been exhausted
+    - Issue requires administrative privileges or physical access
+    - Problem is complex and spans multiple systems
+    - User has already attempted basic troubleshooting without success
+       
+6.  clarify
+    Description: Ask user for specific details to better understand the problem
+    When to use:
+    - User query contains ambiguous terms (e.g., "it", "this", "the problem")
+    - Missing critical information (error codes, software versions, symptoms)
+    - Multiple interpretations of the problem are possible
+
+### DECISION RULES & GUARDRAILS
+- IMPORTANT: You have searched {context['search_count']} times (max: {context['max_searches']}). If at max, you MUST choose 'answer' (with best available info), 'clarify' or 'create_ticket', NOT 'search_kb'
+- If intent confidence < 0.7 OR query contains ambiguous terms (e.g., "it", "that", "the problem") OR critical info is missing → clarify
+- If intent is factual AND retrieved document provides a clear, direct solution → answer
+- If user message contains explicit error codes, logs, or attachments → troubleshoot (unless 'search_kb' finds an exact-match).
+- If intent = troubleshooting + no workflow started → troubleshoot (or answer if we have the document)
+- Use 'create_ticket' after other resolution paths ('search_kb', troubleshoot) are exhausted or if the issue requires privileges/physical access.
+- If the same document keep appearing in searches, do not search again. 'answer' with the best information you have.
 - Never create ticket without attempting resolution first
 - Keep responses concise and actionable
 
 ### OUTPUT FORMAT
-Respond in YAML:
+Respond strictly in the following YAML format:
 ```yaml
 thinking: |
-  <your step-by-step reasoning process>
+  Step 1: Analyze user problem: <summary>
+  Step 2: Available info: <what we have> 
+  Step 3: Missing info: <what we need>
+  Step 4: Best action: <why this helps>
 action: <action_name>
 reasoning: <why you chose this action in one sentence>
 confidence: <0.0 to 1.0>
@@ -361,24 +394,21 @@ class GenerateAnswerNode(Node):
             "conversation_history": history_str
         }
     
-    def exec(self, context: Dict) -> str:
+    def exec(self, context: Dict) -> Dict:
         """Generate answer using LLM."""
         user_os = context.get('user_os', 'unknown')
-        
-        prompt = f"""### YOUR ROLE
-You are a helpful IT support assistant. Provide accurate, concise answers based on official documentation.
+        prompt = f"""
+### CONTEXT
+User Query: "{context['user_query']}"
 
-### USER INFORMATION
-Operating System: {user_os}
-
-### CONTEXT FROM KNOWLEDGE BASE
+Retrieved Knowledge Documents:
 {context['rag_context'] if context['rag_context'] else 'No relevant documents found in knowledge base.'}
 
-### CONVERSATION HISTORY
+Conversation History:
 {context['conversation_history'] if context['conversation_history'] else 'No previous conversation.'}
 
-### USER QUESTION
-{context['user_query']}
+### YOUR ROLE
+You are the Answer Generator component of an IT support AI agent. Your specific function is to provide direct answers and solutions using the available information, ONLY when the decision engine has chosen the 'answer' action.
 
 ### INSTRUCTIONS
 1. Answer using ONLY information from the context above
@@ -393,11 +423,52 @@ Operating System: {user_os}
 7. NEVER include sensitive information (passwords, keys, personal data)
 8. Be friendly and professional
 
-### YOUR ANSWER"""
+### AVAILABLE ANSWER FORMATS
+1.  factual_response
+    Description: Provide direct factual information or definitions
+    When to use: For "what is" questions or factual queries
+
+2.  step_by_step_instructions
+    Description: Explain a solution or fix for a reported issue
+    When to use: When documents provide specific solutions to problems
+
+3.  reference_summary
+    Description: Summarize key information from documentation
+    When to use: When user needs comprehensive but concise information
+
+### DECISION RULES & GUARDRAILS
+- STRICT SOURCE-BASED ANSWERS: Only provide information that is directly supported by the "Retrieved Knowledge Documents".
+- NO HALLUCINATION: Never invent steps, commands, error codes, or solutions not present in the source documents.
+- BE DIRECT AND CONCISE: Get straight to the answer without unnecessary preamble or fluff.
+- USE CLEAR FORMATTING: Apply bullet points for lists and numbered steps for procedures to enhance readability.
+- CITE SOURCES NATURALLY: Reference documents implicitly (e.g., "According to our documentation...", "The knowledge base indicates...").
+- MAINTAIN SECURITY: Never include or infer passwords, API keys, or sensitive information.
+- ACKNOWLEDGE LIMITATIONS: If the available documents don't fully answer the question, state what information you can provide and what's missing.
+
+### OUTPUT FORMAT
+Respond in YAML:
+```yaml
+action: <factual_response | step_by_step_instructions | reference_summary>
+confidence: <0.0 to 1.0 in your diagnosis>
+response_to_user: |
+    <if factual_response: provide 1-2 sentences that would express the anwser to user's request>
+    <if step_by_step_instructions: provide a bulletpoint step-by-step list from the document>
+    <if reference_summary: anlyze the conversation history and summarize the key point on one message in 3-5 sentences>
+```
+### RESPONSE STYLE GUIDELINES
+- Be conversational and empathetic, not robotic
+- Use bullet points for step_by_step_instructions
+- If using docs, cite them briefly: "According to [VPN Setup Guide]..."
+
+Provide the most direct and helpful answer possible using only the verified information from available sources."""
 
         answer = call_llm(prompt, max_tokens=512)
-        logger.info(f"Generated answer: {len(answer)} chars")
-        return answer
+
+        yaml_str = answer.split("```yaml")[1].split("```")[0].strip() if "```yaml" in answer else answer
+        decision = yaml.safe_load(yaml_str)
+
+        logger.info(f"Generated answer: {len(decision)} chars")
+        return decision
     
     def exec_fallback(self, prep_res: Dict, exc: Exception) -> str:
         """Fallback: provide helpful message based on available context."""
@@ -422,7 +493,7 @@ Operating System: {user_os}
         if "response" not in shared:
             shared["response"] = {}
         
-        shared["response"]["text"] = exec_res
+        shared["response"]["text"] = exec_res.get("response_to_user", str(exec_res))
         shared["response"]["action_taken"] = "answer"
         shared["response"]["requires_followup"] = False
         
@@ -456,35 +527,81 @@ class AskClarifyingQuestionNode(Node):
             "conversation_history": history_str
         }
     
-    def exec(self, context: Dict) -> str:
+    def exec(self, context: Dict) -> Dict:
         """Generate clarifying question."""
         user_os = context.get('user_os', 'unknown')
-        
-        prompt = f"""### USER INFORMATION
-Operating System: {user_os}
+        prompt = f"""
+### CONTEXT
+User Query: "{context['user_query']}"
+Intent Classification: {context['intent'].get('intent', 'unclear')} (confidence: {context['intent'].get('confidence', 0):.2f})
 
-### CONVERSATION HISTORY
-{context['conversation_history'] if context['conversation_history'] else 'No previous conversation.'}
+Conversation History:
+{context['conversation_history'] if context['conversation_history'] else 'No previous conversation'}
 
-### CURRENT USER MESSAGE
-"{context['user_query']}"
+### YOUR ROLE
+You are the Clarification Specialist component of an IT support AI agent. Your job is to generate precise, non-redundant clarifying questions that efficiently gather missing information.
 
-### INTENT CLASSIFICATION
-Intent: {context['intent'].get('intent', 'unclear')} (confidence: {context['intent'].get('confidence', 0):.2f})
-
-### YOUR TASK
-Based on the conversation history and the user's current message, generate a specific, 
-helpful clarifying question to better understand their issue. Consider what you already 
-know from the conversation.
+## REASONING PROCESS
+1.  Identify the Gap: Determine what specific information is missing based on the decision engine's analysis and conversation context.
+2.  Avoid Redundancy: Check conversation history to ensure you're not asking for information already provided.
+3.  Choose Question Type: Select the most efficient question format (open-ended, multiple choice, or specific request).
+4.  Optimize Wording: Phrase the question to be clear, specific, and easy for the user to answer.
+5.  Validate Helpfulness: Ensure the question will actually move the conversation toward resolution.
 
 If the user asks what OS they are using, respond: "You are using {user_os}"
 
 Be concise (1-2 sentences) and friendly.
+### AVAILABLE QUESTION STRATEGIES
+1.  specific_detail
+    Description: Ask for a precise piece of information (error code, version number, etc.)
+    When to use: When you need one specific data point to proceed
 
-Clarifying question:"""
+2.  scenario_clarification  
+    Description: Clarify the context or environment where the issue occurs
+    When to use: When the problem context is ambiguous or unclear
+
+3.  symptom_elaboration
+    Description: Ask for more details about symptoms or error messages
+    When to use: When the problem description is too vague
+
+4.  multiple_choice
+    Description: Offer limited choices to quickly narrow down possibilities
+    When to use: When there are common scenarios that need differentiation
+
+### DECISION RULES & GUARDRAILS
+- BE SPECIFIC: Never ask vague questions like "Can you tell me more?" or "What seems to be the problem?"
+- AVOID REPETITION: Do not ask for information that's already in the conversation history
+- ONE QUESTION AT A TIME: Ask only one clear question per interaction to avoid confusion
+- PRESERVE CONTEXT: Reference the current problem to keep the conversation focused
+- MAINTAIN PROFESSIONAL TONE: Be polite and technical without being overly formal
+- CONSIDER INTENT CONFIDENCE: If intent confidence is low, focus on understanding the core issue first
+
+### OUTPUT FORMAT
+Respond with a YAML object containing your clarifying question and metadata:
+
+```yaml
+action: <specific_detail|scenario_clarification|symptom_elaboration|multiple_choice>
+reasoning: <why you chose this action in 1-2 sentences>
+confidence: <0.0 to 1.0 in your diagnosis>
+response_to_user: |
+  <if specific_detail: Ask a direct, single question to get one precise piece of information (e.g., "What is the exact error code?").>
+  <if scenario_clarification: Ask about the context or environment where the issue occurs (e.g., "Are you running this locally or in production?").>
+  <if symptom_elaboration: Ask for more detailed descriptions of the symptoms or error messages (e.g., "What exactly does the error message say?").>
+  <if multiple_choice: Offer 2-4 clear, distinct choices to quickly narrow down the problem (e.g., "Is it A) X, B) Y, or C) Z?").>
+```
+### RESPONSE STYLE GUIDELINES
+- Be conversational and empathetic, not robotic
+- Use bullet points for step_by_step_instructions
+
+Generate the most efficient clarifying question that will provide the missing information needed to resolve the user's issue.
+"""
 
         question = call_llm(prompt, max_tokens=256)  # Limit tokens for clarification
-        return question.strip()
+        
+        yaml_str = question.split("```yaml")[1].split("```")[0].strip() if "```yaml" in question else question
+        decision = yaml.safe_load(yaml_str)
+
+        return decision
     
     def exec_fallback(self, prep_res: Dict, exc: Exception) -> str:
         """Fallback: provide generic clarifying question on error."""
@@ -499,7 +616,7 @@ Clarifying question:"""
         if "response" not in shared:
             shared["response"] = {}
         
-        shared["response"]["text"] = exec_res
+        shared["response"]["text"] = exec_res.get("response_to_user", str(exec_res))
         shared["response"]["action_taken"] = "clarify"
         shared["response"]["requires_followup"] = True
         
