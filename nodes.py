@@ -577,7 +577,7 @@ class AskClarifyingQuestionNode(Node):
             "conversation_history": history_str
         }
     
-    def exec(self, context: Dict) -> str:
+    def exec(self, context: Dict) -> Dict:
         """Generate clarifying question."""
         user_os = context.get('user_os', 'unknown')
         prompt = f"""
@@ -640,12 +640,15 @@ response_to_user: |
   <if multiple_choice: Offer 2-4 clear, distinct choices to quickly narrow down the problem (e.g., "Is it A) X, B) Y, or C) Z?").>
 ```
 
-
 Generate the most efficient clarifying question that will provide the missing information needed to resolve the user's issue.
 """
 
         question = call_llm(prompt, max_tokens=256)  # Limit tokens for clarification
-        return question.strip()
+        
+        yaml_str = question.split("```yaml")[1].split("```")[0].strip() if "```yaml" in question else question
+        decision = yaml.safe_load(yaml_str)
+
+        return decision
     
     def exec_fallback(self, prep_res: Dict, exc: Exception) -> str:
         """Fallback: provide generic clarifying question on error."""
