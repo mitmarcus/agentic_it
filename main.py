@@ -139,8 +139,9 @@ async def process_query(request: QueryRequest):
         # Generate or use provided session ID
         session_id = request.session_id or str(uuid.uuid4())
         user_id = request.user_id or "anonymous"
+        user_os = request.user_os or "unknown"
         
-        logger.info(f"Processing query from session {session_id}: {request.query[:100]}")
+        logger.info(f"Processing query from session {session_id} {user_os}: {request.query[:100]}")
         
         # Add user message to conversation memory
         conversation_memory.add_message(session_id, "user", request.query)
@@ -153,6 +154,7 @@ async def process_query(request: QueryRequest):
         shared = {
             "session_id": session_id,
             "user_id": user_id,
+            "user_os": user_os,
             "user_query": request.query,
             "timestamp": datetime.now().isoformat(),
             "turn_count": turn_count,

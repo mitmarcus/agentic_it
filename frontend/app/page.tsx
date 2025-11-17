@@ -7,6 +7,7 @@ import { ChatInput } from "./components/chat/ChatInput";
 import { StatusBar } from "./components/chat/StatusBar";
 import type { Message, ChatResponse } from "./types/chat";
 import { postJSON } from "./lib/api";
+import { getUserAgentInfo } from "./lib/userAgent";
 
 export default function Home() {
   // The layout is intentionally minimal; styling lives in page.module.css
@@ -35,10 +36,21 @@ export default function Home() {
     setIsLoading(true);
 
     try {
+      // Detect user's OS
+      const userAgent = getUserAgentInfo();
+
       const data = await postJSON<
-        { query: string; session_id?: string },
+        {
+          query: string;
+          session_id?: string;
+          user_os?: string;
+        },
         ChatResponse
-      >("/query", { query: text, session_id: sessionId || undefined });
+      >("/query", {
+        query: text,
+        session_id: sessionId || undefined,
+        user_os: userAgent.os,
+      });
 
       if (!sessionId && data.session_id) {
         setSessionId(data.session_id);
