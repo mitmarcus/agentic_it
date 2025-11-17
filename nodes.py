@@ -580,11 +580,17 @@ Be concise (1-2 sentences) and friendly.
 Respond with a YAML object containing your clarifying question and metadata:
 
 ```yaml
-clarifying_question: "<Your concise, specific question here (1-2 sentences max)>"
-question_type: "<specific_detail|scenario_clarification|symptom_elaboration|multiple_choice>"
-target_information: "<Brief description of what information this question aims to collect>"
-context_preserved: "<How this question relates to the existing conversation>"
+action: <specific_detail|scenario_clarification|symptom_elaboration|multiple_choice>
+reasoning: <why you chose this action in 1-2 sentences>
+confidence: <0.0 to 1.0 in your diagnosis>
+response_to_user: |
+  <if specific_detail: Ask a direct, single question to get one precise piece of information (e.g., "What is the exact error code?").>
+  <if scenario_clarification: Ask about the context or environment where the issue occurs (e.g., "Are you running this locally or in production?").>
+  <if symptom_elaboration: Ask for more detailed descriptions of the symptoms or error messages (e.g., "What exactly does the error message say?").>
+  <if multiple_choice: Offer 2-4 clear, distinct choices to quickly narrow down the problem (e.g., "Is it A) X, B) Y, or C) Z?").>
 ```
+
+
 Generate the most efficient clarifying question that will provide the missing information needed to resolve the user's issue.
 """
 
@@ -604,7 +610,7 @@ Generate the most efficient clarifying question that will provide the missing in
         if "response" not in shared:
             shared["response"] = {}
         
-        shared["response"]["text"] = exec_res
+        shared["response"]["text"] = exec_res.get("response_to_user", str(exec_res))
         shared["response"]["action_taken"] = "clarify"
         shared["response"]["requires_followup"] = True
         
