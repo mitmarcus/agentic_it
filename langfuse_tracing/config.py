@@ -16,7 +16,7 @@ class TracingConfig:
     langfuse_secret_key: Optional[str] = None
     langfuse_public_key: Optional[str] = None
     langfuse_host: Optional[str] = None
-
+    
     # Tracing configuration
     debug: bool = False
     trace_inputs: bool = True
