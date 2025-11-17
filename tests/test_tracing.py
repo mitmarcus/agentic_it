@@ -21,8 +21,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from cremedelacreme import Node, Flow, AsyncNode, AsyncFlow
 from langfuse_tracing import trace_flow, TracingConfig
-from langfuse_tracing.tracing_setup import setup_tracing
-
+from langfuse_tracing.utils.setup import setup_tracing
 
 class SimpleNode(Node):
     """Simple test node for tracing verification."""

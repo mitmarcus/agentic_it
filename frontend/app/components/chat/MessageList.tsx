@@ -23,7 +23,7 @@ export function MessageList({
       ))}
       {isLoading && (
         <div className="flex justify-start animate-[fadeIn_0.3s_ease-in]">
-          <div className="max-w-[680px] px-5 py-4 rounded-2xl relative border border-slate-300/30 shadow-none mr-auto bg-white text-slate-900 rounded-tl-[4px]">
+          <div className="max-w-[680px] px-5 py-4 rounded-2xl relative border border-slate-300/30 shadow-none mr-auto bg-white text-slate-900 rounded-tl-sm">
             <div className="flex gap-1 items-center py-2">
               <span className="w-2 h-2 bg-[#cbd5f5] rounded-full animate-[typing_1.4s_infinite]"></span>
               <span className="w-2 h-2 bg-[#cbd5f5] rounded-full animate-[typing_1.4s_infinite] [animation-delay:0.2s]"></span>
