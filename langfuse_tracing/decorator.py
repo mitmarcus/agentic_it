@@ -111,6 +111,12 @@ def _trace_flow_class(flow_class, config, flow_name, session_id, user_id):
             # Fallback if not properly initialized
             return original_run(self, shared) if original_run else None
 
+        # Patch nodes if not already done (lazy patching)
+        # TODO: best practice for this?
+        if not self._nodes_patched:
+            self._patch_nodes()
+            self._nodes_patched = True
+
         # Start trace
         self._trace_id = self._tracer.start_trace(self._flow_name, shared)
 

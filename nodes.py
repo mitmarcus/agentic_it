@@ -198,6 +198,7 @@ class DecisionMakerNode(Node):
         
         return {
             "user_query": shared.get("user_query", ""),
+            "user_os": shared.get("user_os", "unknown"),
             "intent": shared.get("intent", {}),
             "conversation_history": history_str,
             "doc_summaries": doc_summaries,
@@ -211,6 +212,7 @@ class DecisionMakerNode(Node):
         """Call LLM to decide next action."""
         prompt = f"""### CONTEXT
 User Query: "{context['user_query']}"
+User System: {context.get('user_os', 'unknown')}
 Intent Classification: {context['intent'].get('intent', 'unknown')} (confidence: {context['intent'].get('confidence', 0):.2f})
 Conversation Turn: {context['turn_count']}
 
@@ -354,14 +356,20 @@ class GenerateAnswerNode(Node):
         
         return {
             "user_query": shared.get("user_query", ""),
+            "user_os": shared.get("user_os", "unknown"),
             "rag_context": shared.get("rag_context", ""),
             "conversation_history": history_str
         }
     
     def exec(self, context: Dict) -> str:
         """Generate answer using LLM."""
+        user_os = context.get('user_os', 'unknown')
+        
         prompt = f"""### YOUR ROLE
 You are a helpful IT support assistant. Provide accurate, concise answers based on official documentation.
+
+### USER INFORMATION
+Operating System: {user_os}
 
 ### CONTEXT FROM KNOWLEDGE BASE
 {context['rag_context'] if context['rag_context'] else 'No relevant documents found in knowledge base.'}
@@ -376,9 +384,14 @@ You are a helpful IT support assistant. Provide accurate, concise answers based 
 1. Answer using ONLY information from the context above
 2. Be concise but complete - aim for 3-5 sentences
 3. Use bullet points for step-by-step instructions
-4. If context insufficient, say so and offer to create a ticket
-5. NEVER include sensitive information (passwords, keys, personal data)
-6. Be friendly and professional
+4. **IMPORTANT: Tailor all instructions to the user's operating system ({user_os})**
+   - For Windows: Use Windows-specific paths, commands, and UI elements
+   - For macOS: Use Mac-specific paths, commands, and UI elements
+   - For Linux: Use Linux-specific commands and paths
+5. If the user asks about their OS, tell them: "You are using {user_os}"
+6. If context insufficient, say so and offer to create a ticket
+7. NEVER include sensitive information (passwords, keys, personal data)
+8. Be friendly and professional
 
 ### YOUR ANSWER"""
 
@@ -438,13 +451,19 @@ class AskClarifyingQuestionNode(Node):
         
         return {
             "user_query": shared.get("user_query", ""),
+            "user_os": shared.get("user_os", "unknown"),
             "intent": shared.get("intent", {}),
             "conversation_history": history_str
         }
     
     def exec(self, context: Dict) -> str:
         """Generate clarifying question."""
-        prompt = f"""### CONVERSATION HISTORY
+        user_os = context.get('user_os', 'unknown')
+        
+        prompt = f"""### USER INFORMATION
+Operating System: {user_os}
+
+### CONVERSATION HISTORY
 {context['conversation_history'] if context['conversation_history'] else 'No previous conversation.'}
 
 ### CURRENT USER MESSAGE
@@ -457,6 +476,8 @@ Intent: {context['intent'].get('intent', 'unclear')} (confidence: {context['inte
 Based on the conversation history and the user's current message, generate a specific, 
 helpful clarifying question to better understand their issue. Consider what you already 
 know from the conversation.
+
+If the user asks what OS they are using, respond: "You are using {user_os}"
 
 Be concise (1-2 sentences) and friendly.
 
@@ -552,6 +573,8 @@ class InteractiveTroubleshootNode(Node):
         
         return {
             "user_query": shared.get("user_query", ""),
+            "user_os": shared.get("user_os", "unknown"),
+            "user_browser": shared.get("user_browser", "unknown"),
             "intent": shared.get("intent", {}),
             "doc_summaries": doc_summaries,
             "conversation_history": history_str,
@@ -565,6 +588,7 @@ class InteractiveTroubleshootNode(Node):
         """Analyze user intent and generate intelligent troubleshooting guidance."""
         prompt = f"""### CONTEXT
 User Query: "{context['user_query']}"
+User System: {context.get('user_os', 'unknown')} / {context.get('user_browser', 'unknown')}
 Intent Classification: {context['intent'].get('intent', 'unknown')} (confidence: {context['intent'].get('confidence', 0):.2f})
 Troubleshooting Step: {context['current_step'] + 1}
 Steps Completed: {len(context['steps_completed'])}
@@ -618,6 +642,14 @@ For hardware issues: Power → Connections → Drivers → Settings → Hardware
 For software issues: Restart → Updates → Config → Cache/temp files → Reinstall → System issue
 For network issues: Connection → DNS → Firewall → Proxy → Credentials → Server side
 For access issues: Credentials → Permissions → Account status → System policy → Infrastructure
+
+### PLATFORM-SPECIFIC GUIDANCE
+**Use the User System info ({context.get('user_os')} / {context.get('user_browser')}) to tailor all instructions:**
+- Windows: Use Windows key combinations (Win+R, Win+I), mention PowerShell/CMD, reference Windows Settings
+- macOS: Use Mac key combinations (Cmd+Space, Cmd+,), mention Terminal, reference System Preferences/Settings
+- Linux: Mention terminal commands, package managers (apt/yum/dnf), assume technical familiarity
+- Browser-specific: Chrome DevTools (F12), Safari Web Inspector, Firefox Developer Tools
+- Provide OS-specific paths (e.g., Windows: C:\\Program Files, Mac: /Applications, Linux: /opt or /usr/local)
 
 ### OUTPUT FORMAT
 Respond in YAML:

@@ -8,7 +8,7 @@ import time
 import uuid
 from contextvars import ContextVar
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Set, Union
+from typing import Any, Dict, List, Optional, Set, Union, Callable
 
 try:
     from langfuse import Langfuse
@@ -167,10 +167,6 @@ class LangfuseTracer:
                     kwargs["debug"] = True
 
                 self.client = Langfuse(**kwargs)
-                if config.debug:
-                    print(
-                        f"✓ Langfuse client initialized with host: {config.langfuse_host}"
-                    )
             except Exception as e:
                 if config.debug:
                     print(f"✗ Failed to initialize Langfuse client: {e}")
@@ -231,9 +227,6 @@ class LangfuseTracer:
 
             # Get the trace ID
             trace_id = self.current_trace.id
-
-            if self.config.debug:
-                print(f"✓ Started trace: {trace_id} for flow: {flow_name}")
 
             return trace_id
 
@@ -392,7 +385,7 @@ class LangfuseTracer:
         span_id: str,
         input_data: Any = None,
         output_data: Any = None,
-        error: Exception = None,
+        error: Optional[Exception] = None,
     ) -> None:
         """
         End an async node execution span with context awareness.
@@ -419,7 +412,7 @@ class LangfuseTracer:
         span_id: str,
         input_data: Any = None,
         output_data: Any = None,
-        error: Exception = None,
+        error: Optional[Exception] = None,
     ) -> None:
         """
         End a node execution span.
@@ -732,7 +725,7 @@ class LangfuseTracer:
 
     async def execute_batch_async_flows(
         self,
-        flow_factory: callable,
+        flow_factory: Callable,
         batch_data: List[Any],
         flow_name: str,
         parallel: bool = False,
