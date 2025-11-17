@@ -29,6 +29,40 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def _get_float_env(name: str, default: float) -> float:
+    """Safely read a float from environment variables."""
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return float(default)
+    try:
+        return float(raw_value)
+    except ValueError:
+        logger.warning("Invalid float for %s=%s, using default %.2f", name, raw_value, default)
+        return float(default)
+
+
+def _get_int_env(name: str, default: int) -> int:
+    """Safely read an int from environment variables."""
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return int(default)
+    try:
+        return int(raw_value)
+    except ValueError:
+        logger.warning("Invalid int for %s=%s, using default %d", name, raw_value, default)
+        return int(default)
+
+
+POLICY_LIMITS = {
+    "clarify_confidence_threshold": _get_float_env("AGENT_CLARIFY_CONFIDENCE_THRESHOLD", 0.7),
+    "doc_confidence_threshold": _get_float_env("AGENT_DOC_CONFIDENCE_THRESHOLD", 0.6),
+    "rate_limit_answer_confidence": _get_float_env("AGENT_RATE_LIMIT_ANSWER_CONFIDENCE", 0.5),
+    "system_error_confidence": _get_float_env("AGENT_SYSTEM_ERROR_CONFIDENCE", 0.3),
+    "troubleshoot_escalate_failed_steps": _get_int_env("TROUBLESHOOT_ESCALATE_FAILED_STEPS", 3),
+    "troubleshoot_fallback_failed_steps": _get_int_env("TROUBLESHOOT_FALLBACK_FAILED_STEPS", 2),
+}
+
+
 # ============================================================================
 # Node 1: IntentClassificationNode
 # ============================================================================
@@ -117,7 +151,7 @@ class SearchKnowledgeBaseNode(Node):
             return []
         
         top_k = int(os.getenv("RAG_TOP_K", "3"))
-        min_score = float(os.getenv("RAG_MIN_SCORE", "0.7"))
+        min_score = float(os.getenv("RAG_MIN_SCORE", "0.6"))
         
         # Query collection
         results = query_collection(query_embedding, top_k=top_k)
@@ -210,6 +244,7 @@ class DecisionMakerNode(Node):
     
     def exec(self, context: Dict) -> Dict:
         """Call LLM to decide next action."""
+        clarify_threshold = POLICY_LIMITS["clarify_confidence_threshold"]
         prompt = f"""### CONTEXT
 User Query: "{context['user_query']}"
 User System: {context.get('user_os', 'unknown')}
@@ -255,7 +290,7 @@ analyze the context and decide the next action to help the employee efficiently.
 
 ### DECISION RULES
 - IMPORTANT: You have searched {context['search_count']} times (max: {context['max_searches']}). If at max, you MUST choose 'answer' or 'clarify', NOT 'search_kb'
-- If confidence < 0.7 in understanding query → clarify
+- If confidence < {clarify_threshold:.2f} in understanding query → clarify
 - If intent = factual + good docs found → answer
 - If intent = troubleshooting + no workflow started → troubleshoot (or answer if we have docs)
 - If in workflow + stuck → search_tickets
@@ -301,18 +336,19 @@ Think carefully and make the best decision for the user."""
         confidence = prep_res.get("intent", {}).get("confidence", 0)
         
         # If rate limit and we have good docs, try to answer
-        if "rate limit" in str(exc).lower() and has_docs and confidence > 0.6:
+        doc_conf_threshold = POLICY_LIMITS["doc_confidence_threshold"]
+        if "rate limit" in str(exc).lower() and has_docs and confidence > doc_conf_threshold:
             return {
                 "action": "answer",
                 "reasoning": "Rate limited but have relevant docs",
-                "confidence": 0.5
+                "confidence": POLICY_LIMITS["rate_limit_answer_confidence"]
             }
         
         # Otherwise ask for clarification
         return {
             "action": "clarify",
             "reasoning": "System error, need more information",
-            "confidence": 0.3
+            "confidence": POLICY_LIMITS["system_error_confidence"]
         }
     
     def post(self, shared: Dict, prep_res: Dict, exec_res: Dict) -> str:
@@ -586,6 +622,7 @@ class InteractiveTroubleshootNode(Node):
     
     def exec(self, context: Dict) -> Dict:
         """Analyze user intent and generate intelligent troubleshooting guidance."""
+        escalate_failed_steps = POLICY_LIMITS["troubleshoot_escalate_failed_steps"]
         prompt = f"""### CONTEXT
 User Query: "{context['user_query']}"
 User System: {context.get('user_os', 'unknown')} / {context.get('user_browser', 'unknown')}
@@ -630,7 +667,7 @@ You are an intelligent troubleshooting assistant. Your job is to:
 - CRITICAL: Detect exit signals like "never mind", "forget it", "I'll try later", "actually I need...", "can you help with..."
 - If user changes topic or asks new question → exit_troubleshoot
 - If user reports success ("it works", "that fixed it", "problem solved") → exit_troubleshoot
-- If 3+ failed steps or same error persists → escalate
+- If {escalate_failed_steps}+ failed steps or same error persists → escalate
 - If user shows frustration ("this isn't working", "nothing helps") → escalate
 - If user is engaged and cooperative → continue_troubleshoot
 - NEVER repeat a failed step - pivot to different approach
@@ -644,7 +681,7 @@ For network issues: Connection → DNS → Firewall → Proxy → Credentials �
 For access issues: Credentials → Permissions → Account status → System policy → Infrastructure
 
 ### PLATFORM-SPECIFIC GUIDANCE
-**Use the User System info ({context.get('user_os')} / {context.get('user_browser')}) to tailor all instructions:**
+**Use the User System info {context.get('user_os')} to tailor all instructions:**
 - Windows: Use Windows key combinations (Win+R, Win+I), mention PowerShell/CMD, reference Windows Settings
 - macOS: Use Mac key combinations (Cmd+Space, Cmd+,), mention Terminal, reference System Preferences/Settings
 - Linux: Mention terminal commands, package managers (apt/yum/dnf), assume technical familiarity
@@ -703,11 +740,12 @@ Think like a senior systems engineer who teaches while troubleshooting."""
         failed_count = len(prep_res.get("failed_steps", []))
         
         # Generic system error - escalate if multiple failures
-        if failed_count >= 2:
+        fallback_failed_steps = POLICY_LIMITS["troubleshoot_fallback_failed_steps"]
+        if failed_count >= fallback_failed_steps:
             return {
                 "action": "escalate",
                 "reasoning": "System error with multiple failed steps",
-                "confidence": 0.3,
+                "confidence": POLICY_LIMITS["system_error_confidence"],
                 "response_to_user": (
                     "I'm having trouble generating detailed troubleshooting steps right now, "
                     "and we've already tried several approaches. "
@@ -719,7 +757,7 @@ Think like a senior systems engineer who teaches while troubleshooting."""
         return {
             "action": "continue_troubleshoot",
             "reasoning": "System error but attempting to continue",
-            "confidence": 0.3,
+            "confidence": POLICY_LIMITS["system_error_confidence"],
             "response_to_user": (
                 "I'm having technical difficulties, but let's try a basic troubleshooting step. "
                 "Please restart the affected application or device and let me know if that resolves the issue."
