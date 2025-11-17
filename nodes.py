@@ -639,6 +639,9 @@ response_to_user: |
   <if symptom_elaboration: Ask for more detailed descriptions of the symptoms or error messages (e.g., "What exactly does the error message say?").>
   <if multiple_choice: Offer 2-4 clear, distinct choices to quickly narrow down the problem (e.g., "Is it A) X, B) Y, or C) Z?").>
 ```
+### RESPONSE STYLE GUIDELINES
+- Be conversational and empathetic, not robotic
+- Use bullet points for step_by_step_instructions
 
 Generate the most efficient clarifying question that will provide the missing information needed to resolve the user's issue.
 """
