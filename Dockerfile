@@ -18,6 +18,9 @@ COPY requirements.txt .
 RUN pip install -r requirements.txt
 RUN python -m spacy download en_core_web_sm
 
+# Install Playwright browser for status querying
+RUN playwright install --with-deps chromium
+
 # Copy application code
 COPY utils/ ./utils/
 COPY cremedelacreme/ ./cremedelacreme/
