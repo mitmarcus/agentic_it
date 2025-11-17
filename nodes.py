@@ -437,7 +437,7 @@ class GenerateAnswerNode(Node):
             "conversation_history": history_str
         }
     
-    def exec(self, context: Dict) -> str:
+    def exec(self, context: Dict) -> Dict:
         """Generate answer using LLM."""
         user_os = context.get('user_os', 'unknown')
         
@@ -479,14 +479,10 @@ You are the Answer Generator component of an IT support AI agent. Your specific 
     When to use: For "what is" questions or factual queries
 
 2.  step_by_step_instructions
-    Description: Provide numbered steps to complete a task
-    When to use: For "how to" questions or procedural guidance
-
-3.  solution_explanation
     Description: Explain a solution or fix for a reported issue
     When to use: When documents provide specific solutions to problems
 
-4.  reference_summary
+3.  reference_summary
     Description: Summarize key information from documentation
     When to use: When user needs comprehensive but concise information
 
@@ -500,21 +496,29 @@ You are the Answer Generator component of an IT support AI agent. Your specific 
 - ACKNOWLEDGE LIMITATIONS: If the available documents don't fully answer the question, state what information you can provide and what's missing.
 
 ### OUTPUT FORMAT
-Respond strictly with a YAML object following this exact structure:
+Respond in YAML:
 ```yaml
-text: "<The direct answer to the user's question. Use clear formatting with bullet points or numbered steps where appropriate. Be concise and solution-focused.>"
-metadata:
-  answer_type: "<factual_response|step_by_step_instructions|solution_explanation|reference_summary>"
-  sources_used:
-    - "<brief_description_of_primary_source>"
-    - "<brief_description_of_supporting_source>"
-  completeness_score: "<0.0-1.0>"
+action: <factual_response | step_by_step_instructions | reference_summary>
+confidence: <0.0 to 1.0 in your diagnosis>
+response_to_user: |
+    <if factual_response: provide 1-2 sentences that would express the anwser to user's request>
+    <if step_by_step_instructions: provide a bulletpoint step-by-step list from the document>
+    <if reference_summary: anlyze the conversation history and summarize the key point on one message in 3-5 sentences>
 ```
+### RESPONSE STYLE GUIDELINES
+- Be conversational and empathetic, not robotic
+- Use bullet points for step_by_step_instructions
+- If using docs, cite them briefly: "According to [VPN Setup Guide]..."
+
 Provide the most direct and helpful answer possible using only the verified information from available sources."""
 
         answer = call_llm(prompt, max_tokens=512)
-        logger.info(f"Generated answer: {len(answer)} chars")
-        return answer
+
+        yaml_str = answer.split("```yaml")[1].split("```")[0].strip() if "```yaml" in answer else answer
+        decision = yaml.safe_load(yaml_str)
+
+        logger.info(f"Generated answer: {len(decision)} chars")
+        return decision
     
     def exec_fallback(self, prep_res: Dict, exc: Exception) -> str:
         """Fallback: provide helpful message based on available context."""
@@ -539,7 +543,7 @@ Provide the most direct and helpful answer possible using only the verified info
         if "response" not in shared:
             shared["response"] = {}
         
-        shared["response"]["text"] = exec_res
+        shared["response"]["text"] = exec_res.get("response_to_user", str(exec_res))
         shared["response"]["action_taken"] = "answer"
         shared["response"]["requires_followup"] = False
         
