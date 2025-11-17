@@ -9,7 +9,7 @@ import numpy as np
 import json
 import logging
 
-from embedding_local import get_embedding
+from .embedding_local import get_embedding
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -41,6 +41,16 @@ def estimate_tokens(text: str) -> int:
     Rough token estimate — currently words. Replace with a true tokenizer (e.g. tiktoken) if you need precision.
     """
     return len(text.split()) if text else 0
+
+def truncate_to_token_limit(text: str, max_tokens: int) -> str:
+    """
+    Truncate the text so it doesn't exceed max_tokens.
+    Simple heuristic: split by spaces (words) and cut at max_tokens.
+    """
+    words = text.split()
+    if len(words) <= max_tokens:
+        return text
+    return " ".join(words[:max_tokens])
 
 
 def _normalize_rows(mat: np.ndarray) -> np.ndarray:
@@ -146,7 +156,7 @@ def semantic_chunk_sentences(
 def chunk_text(
     text: str,
     chunk_size: int = _DEFAULT_CHUNK_SIZE,
-    overlap_sentences: int = _DEFAULT_CHUNK_OVERLAP_SENTENCES,
+    chunk_overlap: int = _DEFAULT_CHUNK_OVERLAP_SENTENCES,
     similarity_threshold: float = _DEFAULT_SIMILARITY_THRESHOLD
 ) -> List[str]:
     """
@@ -154,7 +164,7 @@ def chunk_text(
     - If the text looks like lots of short lines (e.g., < 50 chars), split by line length into character-based chunks.
     - Otherwise, split into semantic chunks by sentences.
 
-    overlap_sentences indicates how many sentences from previous chunk to prefix onto the next chunk (sentence-level overlap).
+    chunk_overlap indicates how many sentences from previous chunk to prefix onto the next chunk (sentence-level overlap).
     """
     if not text:
         return []
@@ -171,7 +181,6 @@ def chunk_text(
         current_length = 0
         for line in lines:
             line_length = len(line)
-            # use approximate character budget
             if current_length + line_length + 1 > chunk_size:
                 if current_chunk:
                     chunks.append(" ".join(current_chunk))
@@ -198,7 +207,7 @@ def chunk_text(
     # filter tiny chunks
     chunks = [c for c in chunks if len(c.strip()) > 10]
 
-    if overlap_sentences and overlap_sentences > 0:
+    if chunk_overlap and chunk_overlap > 0:
         final_chunks: List[str] = []
         parsed_sent_lists = [list(get_nlp()(c).sents) for c in chunks]
         for i, chunk in enumerate(chunks):
@@ -206,8 +215,7 @@ def chunk_text(
                 final_chunks.append(chunk)
                 continue
             prev_sents = parsed_sent_lists[i - 1]
-            overlap_n = min(len(prev_sents), overlap_sentences)
-            # join last overlap_n sentences from previous chunk
+            overlap_n = min(len(prev_sents), chunk_overlap)
             overlap_text = " ".join([s.text for s in prev_sents[-overlap_n:]]).strip()
             combined = f"{overlap_text} {chunk}".strip() if overlap_text else chunk
             final_chunks.append(combined)
@@ -219,7 +227,7 @@ def chunk_text(
 def chunk_documents(
     documents: List[Dict[str, Any]],
     chunk_size: int = _DEFAULT_CHUNK_SIZE,
-    overlap_sentences: int = _DEFAULT_CHUNK_OVERLAP_SENTENCES,
+    chunk_overlap: int = _DEFAULT_CHUNK_OVERLAP_SENTENCES,
     similarity_threshold: float = _DEFAULT_SIMILARITY_THRESHOLD,
 ) -> List[Dict[str, Any]]:
     """
@@ -244,7 +252,7 @@ def chunk_documents(
         text_chunks = chunk_text(
             text,
             chunk_size=chunk_size,
-            overlap_sentences=overlap_sentences,
+            chunk_overlap=chunk_overlap,
             similarity_threshold=similarity_threshold
         )
 
