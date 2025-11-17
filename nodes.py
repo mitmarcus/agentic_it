@@ -177,7 +177,7 @@ class DecisionMakerNode(Node):
         
         # Format history - exclude the very last message (current query)
         history_str = ""
-        for msg in history[:-1][-6:]:  # Last 3 exchanges, excluding current query
+        for msg in history[:-1][-20:]:  # Last 10 exchanges, excluding current query
             history_str += f"{msg['role']}: {msg['content']}\n"
         
         # Get retrieved docs summary
@@ -198,6 +198,7 @@ class DecisionMakerNode(Node):
         
         return {
             "user_query": shared.get("user_query", ""),
+            "user_os": shared.get("user_os", "unknown"),
             "intent": shared.get("intent", {}),
             "conversation_history": history_str,
             "doc_summaries": doc_summaries,
@@ -211,6 +212,7 @@ class DecisionMakerNode(Node):
         """Call LLM to decide next action."""
         prompt = f"""### CONTEXT
 User Query: "{context['user_query']}"
+User System: {context.get('user_os', 'unknown')}
 Intent Classification: {context['intent'].get('intent', 'unknown')} (confidence: {context['intent'].get('confidence', 0):.2f})
 Conversation Turn: {context['turn_count']}
 
@@ -354,14 +356,20 @@ class GenerateAnswerNode(Node):
         
         return {
             "user_query": shared.get("user_query", ""),
+            "user_os": shared.get("user_os", "unknown"),
             "rag_context": shared.get("rag_context", ""),
             "conversation_history": history_str
         }
     
     def exec(self, context: Dict) -> str:
         """Generate answer using LLM."""
+        user_os = context.get('user_os', 'unknown')
+        
         prompt = f"""### YOUR ROLE
 You are a helpful IT support assistant. Provide accurate, concise answers based on official documentation.
+
+### USER INFORMATION
+Operating System: {user_os}
 
 ### CONTEXT FROM KNOWLEDGE BASE
 {context['rag_context'] if context['rag_context'] else 'No relevant documents found in knowledge base.'}
@@ -376,9 +384,14 @@ You are a helpful IT support assistant. Provide accurate, concise answers based 
 1. Answer using ONLY information from the context above
 2. Be concise but complete - aim for 3-5 sentences
 3. Use bullet points for step-by-step instructions
-4. If context insufficient, say so and offer to create a ticket
-5. NEVER include sensitive information (passwords, keys, personal data)
-6. Be friendly and professional
+4. **IMPORTANT: Tailor all instructions to the user's operating system ({user_os})**
+   - For Windows: Use Windows-specific paths, commands, and UI elements
+   - For macOS: Use Mac-specific paths, commands, and UI elements
+   - For Linux: Use Linux-specific commands and paths
+5. If the user asks about their OS, tell them: "You are using {user_os}"
+6. If context insufficient, say so and offer to create a ticket
+7. NEVER include sensitive information (passwords, keys, personal data)
+8. Be friendly and professional
 
 ### YOUR ANSWER"""
 
@@ -438,13 +451,19 @@ class AskClarifyingQuestionNode(Node):
         
         return {
             "user_query": shared.get("user_query", ""),
+            "user_os": shared.get("user_os", "unknown"),
             "intent": shared.get("intent", {}),
             "conversation_history": history_str
         }
     
     def exec(self, context: Dict) -> str:
         """Generate clarifying question."""
-        prompt = f"""### CONVERSATION HISTORY
+        user_os = context.get('user_os', 'unknown')
+        
+        prompt = f"""### USER INFORMATION
+Operating System: {user_os}
+
+### CONVERSATION HISTORY
 {context['conversation_history'] if context['conversation_history'] else 'No previous conversation.'}
 
 ### CURRENT USER MESSAGE
@@ -457,6 +476,8 @@ Intent: {context['intent'].get('intent', 'unclear')} (confidence: {context['inte
 Based on the conversation history and the user's current message, generate a specific, 
 helpful clarifying question to better understand their issue. Consider what you already 
 know from the conversation.
+
+If the user asks what OS they are using, respond: "You are using {user_os}"
 
 Be concise (1-2 sentences) and friendly.
 
@@ -533,125 +554,248 @@ class InteractiveTroubleshootNode(Node):
     def prep(self, shared: Dict) -> Dict:
         """Gather context for troubleshooting."""
         session_id = shared.get("session_id", "")
-        history = conversation_memory.get_conversation_history(session_id, limit=5)
+        history = conversation_memory.get_conversation_history(session_id, limit=10)
         
         # Get current troubleshooting state
         ts_state = shared.get("troubleshoot_state", {})
         
+        # Format conversation history
+        history_str = ""
+        for msg in history[:-1][-20:]:  # Last 10 exchanges, excluding current query
+            history_str += f"{msg['role']}: {msg['content']}\n"
+        
+        # Get retrieved docs summary
+        retrieved_docs = shared.get("retrieved_docs", [])
+        doc_summaries = ""
+        for i, doc in enumerate(retrieved_docs[:3]):
+            source = doc.get('metadata', {}).get('source_file', 'unknown')
+            doc_summaries += f"{i+1}. [{source}] {doc.get('document', '')[:150]}...\n"
+        
         return {
             "user_query": shared.get("user_query", ""),
+            "user_os": shared.get("user_os", "unknown"),
+            "user_browser": shared.get("user_browser", "unknown"),
             "intent": shared.get("intent", {}),
-            "retrieved_docs": shared.get("retrieved_docs", []),
-            "conversation_history": history,
+            "doc_summaries": doc_summaries,
+            "conversation_history": history_str,
             "current_step": ts_state.get("current_step", 0),
             "steps_completed": ts_state.get("steps_completed", []),
+            "failed_steps": ts_state.get("failed_steps", []),
             "issue_type": ts_state.get("issue_type", "")
         }
     
-    def exec(self, context: Dict) -> str:
-        """Generate troubleshooting steps."""
-        # Build context for LLM
-        doc_context = ""
-        if context["retrieved_docs"]:
-            doc_context = "\n".join([
-                f"- {doc['metadata'].get('title', 'Untitled')}: {doc['text'][:200]}..."
-                for doc in context["retrieved_docs"][:3]
-            ])
-        
-        history_str = ""
-        if context["conversation_history"]:
-            history_str = "\n".join([
-                f"{msg['role']}: {msg['content']}"
-                for msg in context["conversation_history"][-3:]
-            ])
-        
-        # Analyze conversation to determine troubleshooting phase
-        is_first_step = context['current_step'] == 0
-        has_documentation = bool(doc_context)
-        has_history = bool(history_str)
-        
-        prompt = f"""You are an IT support troubleshooting assistant. Guide the user step-by-step through their technical issue.
+    def exec(self, context: Dict) -> Dict:
+        """Analyze user intent and generate intelligent troubleshooting guidance."""
+        prompt = f"""### CONTEXT
+User Query: "{context['user_query']}"
+User System: {context.get('user_os', 'unknown')} / {context.get('user_browser', 'unknown')}
+Intent Classification: {context['intent'].get('intent', 'unknown')} (confidence: {context['intent'].get('confidence', 0):.2f})
+Troubleshooting Step: {context['current_step'] + 1}
+Steps Completed: {len(context['steps_completed'])}
+Failed Steps: {len(context['failed_steps'])}
 
-**CURRENT SITUATION:**
-• User says: "{context['user_query']}"
-• Issue type: {context['intent'].get('intent', 'unknown')}
-• Troubleshooting step: {context['current_step'] + 1}
-{f"• Steps tried: {', '.join(context['steps_completed'])}" if context['steps_completed'] else ""}
+Retrieved Documentation:
+{context['doc_summaries'] if context['doc_summaries'] else 'No relevant documentation retrieved'}
 
-**AVAILABLE CONTEXT:**
-{f"Documentation:\n{doc_context[:300]}..." if has_documentation else "• No official documentation found"}
+Conversation History:
+{context['conversation_history'] if context['conversation_history'] else 'No previous conversation'}
 
-{f"Recent conversation:\n{history_str}" if has_history else ""}
+Previous Steps Taken:
+{chr(10).join(f"- {step}" for step in context['steps_completed'][-3:]) if context['steps_completed'] else 'None - this is the initial step'}
 
-**YOUR TASK:**
-{"**Initial Assessment** - Understand the problem:" if is_first_step else "**Next Step** - Based on what they've reported:"}
-{"1. Ask 1-2 diagnostic questions (e.g., error messages, when it started, what they've tried)" if is_first_step else "1. Analyze their last response to determine what worked/didn't work"}
-{"2. Explain what you're checking for and why" if is_first_step else "2. Provide ONE clear, actionable step (not multiple options)"}
-{"3. Give first simple troubleshooting step to try" if is_first_step else "3. Explain what this step checks/fixes"}
-4. Ask them to report specific results or observations
+Failed Attempts:
+{chr(10).join(f"- {step}" for step in context['failed_steps'][-3:]) if context['failed_steps'] else 'None'}
 
-**SMART TROUBLESHOOTING PRINCIPLES:**
-• Follow the diagnostic tree: Check simple/common issues before complex ones
-• Don't repeat steps they've already mentioned trying
-• If a step failed, don't suggest the same approach - pivot to alternatives
-• Look for patterns: error messages, timing, specific scenarios
-• Know when to escalate: If 3+ steps fail, suggest creating a ticket
-{f"• Use official docs when relevant: {doc_context[:150]}..." if has_documentation else "• Without docs, rely on general IT best practices"}
+### YOUR ROLE
+You are an intelligent troubleshooting assistant. Your job is to:
+1. **Detect user intent changes** - recognize if user wants to exit troubleshooting, ask something else, or continue
+2. **Provide diagnostic reasoning** - think like a systems engineer, not a script reader
+3. **Adapt dynamically** - learn from failed steps and adjust your approach
+4. **Know when to escalate** - recognize unsolvable issues and recommend human intervention
 
-**RESPONSE STYLE:**
-Be conversational, not robotic. Format with bullet points for clarity. Keep it concise (3-5 sentences max).
-
-Your response:"""
-
-        response = call_llm(prompt, max_tokens=512)
-        return response
+### AVAILABLE ACTIONS
+[1] continue_troubleshoot
+    Description: Provide next diagnostic step or question
+    When to use: User is engaged, issue not yet resolved, more steps to try
     
-    def exec_fallback(self, prep_res: Dict, exc: Exception) -> str:
-        """Fallback: provide basic troubleshooting guidance on error."""
+[2] exit_troubleshoot
+    Description: Exit troubleshooting mode cleanly
+    When to use: User explicitly says stop/cancel/nevermind, asks unrelated question, or says issue is resolved
+    
+[3] escalate
+    Description: Recommend creating support ticket
+    When to use: 2+ failed steps, issue beyond first-level support, or user is frustrated
+
+### DECISION RULES
+- CRITICAL: Detect exit signals like "never mind", "forget it", "I'll try later", "actually I need...", "can you help with..."
+- If user changes topic or asks new question → exit_troubleshoot
+- If user reports success ("it works", "that fixed it", "problem solved") → exit_troubleshoot
+- If 3+ failed steps or same error persists → escalate
+- If user shows frustration ("this isn't working", "nothing helps") → escalate
+- If user is engaged and cooperative → continue_troubleshoot
+- NEVER repeat a failed step - pivot to different approach
+- Use official documentation when available, but explain the reasoning
+- Start with most common/simple causes before rare/complex ones
+
+### DIAGNOSTIC REASONING FRAMEWORK
+For hardware issues: Power → Connections → Drivers → Settings → Hardware failure
+For software issues: Restart → Updates → Config → Cache/temp files → Reinstall → System issue
+For network issues: Connection → DNS → Firewall → Proxy → Credentials → Server side
+For access issues: Credentials → Permissions → Account status → System policy → Infrastructure
+
+### PLATFORM-SPECIFIC GUIDANCE
+**Use the User System info ({context.get('user_os')} / {context.get('user_browser')}) to tailor all instructions:**
+- Windows: Use Windows key combinations (Win+R, Win+I), mention PowerShell/CMD, reference Windows Settings
+- macOS: Use Mac key combinations (Cmd+Space, Cmd+,), mention Terminal, reference System Preferences/Settings
+- Linux: Mention terminal commands, package managers (apt/yum/dnf), assume technical familiarity
+- Browser-specific: Chrome DevTools (F12), Safari Web Inspector, Firefox Developer Tools
+- Provide OS-specific paths (e.g., Windows: C:\\Program Files, Mac: /Applications, Linux: /opt or /usr/local)
+
+### OUTPUT FORMAT
+Respond in YAML:
+```yaml
+thinking: |
+  <analyze user's response, detect intent change, review what's been tried, 
+   determine root cause hypothesis, decide next diagnostic step>
+action: <continue_troubleshoot | exit_troubleshoot | escalate>
+reasoning: <why you chose this action in 1-2 sentences>
+confidence: <0.0 to 1.0 in your diagnosis>
+response_to_user: |
+  <if continue_troubleshoot: provide ONE specific diagnostic step with clear reasoning>
+  <if exit_troubleshoot: acknowledge their intent and offer help with new topic>
+  <if escalate: explain why escalation is needed and summarize findings>
+next_hypothesis: <your working theory about root cause, or null if exiting>
+```
+
+### RESPONSE STYLE GUIDELINES
+- Be conversational and empathetic, not robotic
+- Explain WHY each step matters (e.g., "checking X because Y often causes Z")
+- Use bullet points for multi-step instructions
+- Ask for specific observations, not yes/no (e.g., "What error code do you see?" not "Is there an error?")
+- Keep under 3 sentences unless complex procedure requires more
+- If using docs, cite them briefly: "According to [VPN Setup Guide]..."
+
+Think like a senior systems engineer who teaches while troubleshooting."""
+
+        response = call_llm(prompt, max_tokens=768)
+        
+        # Parse YAML response
+        yaml_str = response.split("```yaml")[1].split("```")[0].strip() if "```yaml" in response else response
+        decision = yaml.safe_load(yaml_str)
+        
+        # Validate decision
+        allowed_actions = ["continue_troubleshoot", "exit_troubleshoot", "escalate"]
+        assert isinstance(decision, dict), "Decision must be a dict"
+        assert "action" in decision, "Decision must have 'action' field"
+        assert decision["action"] in allowed_actions, f"Action must be one of {allowed_actions}"
+        assert "response_to_user" in decision, "Decision must have 'response_to_user' field"
+        
+        logger.info(f"Troubleshoot decision: {decision['action']} (confidence: {decision.get('confidence', 0):.2f})")
+        
+        return decision
+    
+    def exec_fallback(self, prep_res: Dict, exc: Exception) -> Dict:
+        """Fallback: provide intelligent response based on context when LLM fails."""
         logger.error(f"Troubleshooting guidance generation failed: {exc}")
         
         is_first_step = prep_res.get("current_step", 0) == 0
         user_query = prep_res.get("user_query", "your issue")
+        failed_count = len(prep_res.get("failed_steps", []))
         
-        if "rate limit" in str(exc).lower():
-            if is_first_step:
-                return (f"I understand you're experiencing an issue with {user_query}. "
-                        "I'm currently experiencing high load, but I can still help. "
-                        "Could you tell me: When did this start happening? "
-                        "Are you seeing any error messages? "
-                        "What have you already tried?")
-            else:
-                return ("I'm experiencing high load right now. "
-                        "Based on what you've told me, please try restarting the device/application "
-                        "and let me know if that resolves the issue.")
-        
-        return ("I'm having trouble generating detailed troubleshooting steps right now. "
-                "Please contact IT support directly for immediate assistance, "
-                "or try again in a few minutes.")
-    
-    def post(self, shared: Dict, prep_res: Dict, exec_res: str) -> str:
-        """Update troubleshooting state and response."""
-        # Update troubleshooting state
-        if "troubleshoot_state" not in shared:
-            shared["troubleshoot_state"] = {
-                "current_step": 0,
-                "steps_completed": [],
-                "issue_type": prep_res["intent"].get("intent", "")
+        # Generic system error - escalate if multiple failures
+        if failed_count >= 2:
+            return {
+                "action": "escalate",
+                "reasoning": "System error with multiple failed steps",
+                "confidence": 0.3,
+                "response_to_user": (
+                    "I'm having trouble generating detailed troubleshooting steps right now, "
+                    "and we've already tried several approaches. "
+                    "I recommend contacting IT support directly for immediate assistance."
+                ),
+                "next_hypothesis": None
             }
         
-        shared["troubleshoot_state"]["current_step"] += 1
+        return {
+            "action": "continue_troubleshoot",
+            "reasoning": "System error but attempting to continue",
+            "confidence": 0.3,
+            "response_to_user": (
+                "I'm having technical difficulties, but let's try a basic troubleshooting step. "
+                "Please restart the affected application or device and let me know if that resolves the issue."
+            ),
+            "next_hypothesis": "Standard restart procedure"
+        }
+    
+    def post(self, shared: Dict, prep_res: Dict, exec_res: Dict) -> str:
+        """Update troubleshooting state and determine next action."""
+        action = exec_res.get("action", "continue_troubleshoot")
+        response_text = exec_res.get("response_to_user", "I'm here to help with your issue.")
         
-        # Store response
-        if "response" not in shared:
-            shared["response"] = {}
+        # Handle different actions
+        if action == "exit_troubleshoot":
+            # Clear troubleshooting state
+            shared.pop("troubleshoot_state", None)
+            
+            if "response" not in shared:
+                shared["response"] = {}
+            
+            shared["response"]["text"] = response_text
+            shared["response"]["action_taken"] = "exit_troubleshoot"
+            shared["response"]["requires_followup"] = False
+            
+            logger.info("Exiting troubleshooting mode per user intent")
+            return "exit"  # Exit troubleshooting flow
         
-        shared["response"]["text"] = exec_res
-        shared["response"]["action_taken"] = "troubleshoot"
-        shared["response"]["requires_followup"] = True
+        elif action == "escalate":
+            # Mark for escalation
+            if "troubleshoot_state" not in shared:
+                shared["troubleshoot_state"] = {}
+            
+            shared["troubleshoot_state"]["escalated"] = True
+            
+            if "response" not in shared:
+                shared["response"] = {}
+            
+            shared["response"]["text"] = response_text
+            shared["response"]["action_taken"] = "escalate"
+            shared["response"]["requires_followup"] = True
+            
+            logger.info("Escalating to human support")
+            return "escalate"
         
-        logger.info(f"Troubleshooting step {shared['troubleshoot_state']['current_step']} completed")
-        
-        return "default"
+        else:  # continue_troubleshoot
+            # Update troubleshooting state
+            if "troubleshoot_state" not in shared:
+                shared["troubleshoot_state"] = {
+                    "current_step": 0,
+                    "steps_completed": [],
+                    "failed_steps": [],
+                    "issue_type": prep_res.get("intent", {}).get("intent", "")
+                }
+            
+            ts_state = shared["troubleshoot_state"]
+            ts_state["current_step"] += 1
+            
+            # Track hypothesis
+            hypothesis = exec_res.get("next_hypothesis")
+            if hypothesis:
+                ts_state["current_hypothesis"] = hypothesis
+            
+            # Store response
+            if "response" not in shared:
+                shared["response"] = {}
+            
+            shared["response"]["text"] = response_text
+            shared["response"]["action_taken"] = "troubleshoot"
+            shared["response"]["requires_followup"] = True
+            
+            logger.info(
+                f"Troubleshooting step {ts_state['current_step']} completed. "
+                f"Hypothesis: {hypothesis}"
+            )
+            
+            return "continue"
 
 
 # ============================================================================
