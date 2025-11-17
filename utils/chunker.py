@@ -1,232 +1,296 @@
 """
-Document chunking utilities for text processing.
+Document chunking utilities for text processing (TXT-only) using local embeddings.
 """
 import os
-from typing import Dict, Any
+from typing import Dict, Any, List, Optional, Iterable
+from pathlib import Path
+import spacy
+import numpy as np
+import json
+import logging
+
+from .embedding_local import get_embedding
+from dotenv import load_dotenv
+
+load_dotenv()
+
+# Logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Load spaCy lazily (avoid heavy import-time cost in some contexts).
+_NLP = None
 
 
-# Default chunking configuration
-_DEFAULT_CHUNK_SIZE = 500
-_DEFAULT_CHUNK_OVERLAP = 50
-_DEFAULT_SEPARATORS = ("\n\n", "\n", ". ", " ")
+def get_nlp():
+    global _NLP
+    if _NLP is None:
+        _NLP = spacy.load(os.getenv("SPACY_MODEL", "en_core_web_sm"))
+    return _NLP
+
+
+# Defaults
+_DEFAULT_CHUNK_SIZE = int(os.getenv("INGESTION_CHUNK_SIZE", 1000))  # tokens (heuristic)
+_DEFAULT_CHUNK_OVERLAP_SENTENCES = int(os.getenv("INGESTION_CHUNK_OVERLAP_SENTENCES", 3))
+_DEFAULT_SIMILARITY_THRESHOLD = float(os.getenv("INGESTION_SIMILARITY_THRESHOLD", 0.6))
+_DEFAULT_EMBED_BATCH = int(os.getenv("INGESTION_EMBED_BATCH", 32))
+
+
+def estimate_tokens(text: str) -> int:
+    """
+    Rough token estimate — currently words. Replace with a true tokenizer (e.g. tiktoken) if you need precision.
+    """
+    return len(text.split()) if text else 0
+
+def truncate_to_token_limit(text: str, max_tokens: int) -> str:
+    """
+    Truncate the text so it doesn't exceed max_tokens.
+    Simple heuristic: split by spaces (words) and cut at max_tokens.
+    """
+    words = text.split()
+    if len(words) <= max_tokens:
+        return text
+    return " ".join(words[:max_tokens])
+
+
+def _normalize_rows(mat: np.ndarray) -> np.ndarray:
+    norms = np.linalg.norm(mat, axis=1, keepdims=True)
+    return mat / np.maximum(norms, 1e-12)
+
+
+def get_embeddings_batch(sentences: Iterable[str], batch_size: int = _DEFAULT_EMBED_BATCH) -> np.ndarray:
+    """
+    Get embeddings for a list/iterable of sentences. Batches calls to get_embedding to avoid making a call per sentence.
+    Assumes get_embedding returns a 1D numpy array or list-like.
+    Returns a (N, D) numpy array of L2-normalized vectors (cosine-ready).
+    """
+    embs: List[np.ndarray] = []
+    batch: List[str] = []
+    for s in sentences:
+        batch.append(s)
+        if len(batch) >= batch_size:
+            # call get_embedding for each in batch (if your embedding provider has real batching, replace here)
+            embs.extend([np.array(get_embedding(x), dtype=np.float32) for x in batch])
+            batch = []
+    if batch:
+        embs.extend([np.array(get_embedding(x), dtype=np.float32) for x in batch])
+
+    if not embs:
+        return np.zeros((0, 0), dtype=np.float32)
+
+    embs_array = np.vstack(embs).astype(np.float32)
+    embs_array = _normalize_rows(embs_array)
+    return embs_array
+
+
+def semantic_chunk_sentences(
+    sentences: List[str],
+    max_chunk_tokens: int = _DEFAULT_CHUNK_SIZE,
+    similarity_threshold: float = _DEFAULT_SIMILARITY_THRESHOLD
+) -> List[str]:
+    """
+    Build semantically-coherent chunks by iterating sentence-by-sentence and either appending to the current chunk
+    or starting a new one when token budget is exceeded or similarity to centroid drops below threshold.
+
+    NOTE: similarity uses cosine similarity; both sentence embeddings and centroid are normalized.
+    """
+    if not sentences:
+        return []
+
+    sent_embs = get_embeddings_batch(sentences)
+    if sent_embs.size == 0:
+        # fallback: chunk by naive token size if embeddings failed
+        logger.warning("No embeddings returned; falling back to naive token-based sentence join.")
+        chunks: List[str] = []
+        cur: List[str] = []
+        cur_toks = 0
+        for s in sentences:
+            s_toks = estimate_tokens(s)
+            if cur and cur_toks + s_toks > max_chunk_tokens:
+                chunks.append(" ".join(cur))
+                cur = [s]
+                cur_toks = s_toks
+            else:
+                cur.append(s)
+                cur_toks += s_toks
+        if cur:
+            chunks.append(" ".join(cur))
+        return chunks
+
+    chunks: List[str] = []
+    current_chunk_sents: List[str] = []
+    current_embs: List[np.ndarray] = []
+
+    for i, sent in enumerate(sentences):
+        emb = sent_embs[i]
+
+        if not current_chunk_sents:
+            current_chunk_sents.append(sent)
+            current_embs.append(emb)
+            continue
+
+        # centroid: mean then normalize
+        centroid = np.mean(np.vstack(current_embs), axis=0)
+        centroid = centroid / (np.linalg.norm(centroid) + 1e-12)
+
+        sim = float(np.dot(emb, centroid))  # cosine similarity
+
+        tentative_text = " ".join(current_chunk_sents + [sent])
+        tentative_tokens = estimate_tokens(tentative_text)
+
+        # Conditions to break: token overflow OR (low similarity AND chunk not too small)
+        if tentative_tokens > max_chunk_tokens or (sim < similarity_threshold and tentative_tokens > 50):
+            chunks.append(" ".join(current_chunk_sents))
+            current_chunk_sents = [sent]
+            current_embs = [emb]
+        else:
+            current_chunk_sents.append(sent)
+            current_embs.append(emb)
+
+    if current_chunk_sents:
+        chunks.append(" ".join(current_chunk_sents))
+
+    return chunks
 
 
 def chunk_text(
     text: str,
-    *,
-    chunk_size: int = int(os.getenv("INGESTION_CHUNK_SIZE", _DEFAULT_CHUNK_SIZE)),
-    chunk_overlap: int = int(os.getenv("INGESTION_CHUNK_OVERLAP", _DEFAULT_CHUNK_OVERLAP)),
-    separators: tuple[str, ...] = _DEFAULT_SEPARATORS
-) -> list[str]:
+    chunk_size: int = _DEFAULT_CHUNK_SIZE,
+    chunk_overlap: int = _DEFAULT_CHUNK_OVERLAP_SENTENCES,
+    similarity_threshold: float = _DEFAULT_SIMILARITY_THRESHOLD
+) -> List[str]:
     """
-    Split text into chunks with overlap for better context.
-    
-    Args:
-        text: Input text to chunk
-        chunk_size: Target chunk size in characters (defaults to env var or 500)
-        chunk_overlap: Overlap between chunks in characters (defaults to env var or 50)
-        separators: Separators to try for splitting (paragraph, sentence, word)
-    
-    Returns:
-        List of text chunks
-        
-    Example:
-        >>> chunk_text("Long text here...", chunk_size=100, chunk_overlap=20)
-        ['chunk1...', 'chunk2...']
+    Chunk text. Two modes:
+    - If the text looks like lots of short lines (e.g., < 50 chars), split by line length into character-based chunks.
+    - Otherwise, split into semantic chunks by sentences.
+
+    chunk_overlap indicates how many sentences from previous chunk to prefix onto the next chunk (sentence-level overlap).
     """
-    
-    if not text or len(text) == 0:
+    if not text:
         return []
-    
-    # If text is smaller than chunk_size, return as single chunk
-    if len(text) <= chunk_size:
-        return [text]
-    
-    chunks = []
-    start = 0
-    
-    while start < len(text):
-        # Calculate end position
-        end = start + chunk_size
-        
-        # If this is the last chunk, take everything
-        if end >= len(text):
-            chunks.append(text[start:].strip())
-            break
-        
-        # Try to find a good split point using separators
-        split_point = end
-        for separator in separators:
-            # Look for separator near the end of the chunk
-            search_start = max(start, end - len(separator) * 10)
-            last_sep = text.rfind(separator, search_start, end)
-            
-            if last_sep > start:
-                split_point = last_sep + len(separator)
-                break
-        
-        # Add chunk
-        chunk = text[start:split_point].strip()
-        if chunk:
-            chunks.append(chunk)
-        
-        # Move start position with overlap
-        next_start = split_point - chunk_overlap
-        
-        # Ensure we're making progress (avoid infinite loop)
-        if next_start <= start:
-            next_start = split_point
-        
-        start = next_start
-    
+
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return []
+
+    # short-line heuristic
+    short_line_ratio = sum(1 for line in lines if len(line) < 50) / len(lines)
+    if short_line_ratio > 0.6:
+        chunks: List[str] = []
+        current_chunk: List[str] = []
+        current_length = 0
+        for line in lines:
+            line_length = len(line)
+            if current_length + line_length + 1 > chunk_size:
+                if current_chunk:
+                    chunks.append(" ".join(current_chunk))
+                current_chunk = [line]
+                current_length = line_length
+            else:
+                current_chunk.append(line)
+                current_length += line_length + 1
+        if current_chunk:
+            chunks.append(" ".join(current_chunk))
+        return chunks
+
+    # sentence-based semantic chunking
+    nlp = get_nlp()
+    doc = nlp(text)
+    sentences = [sent.text.strip() for sent in doc.sents if sent.text.strip()]
+
+    chunks = semantic_chunk_sentences(
+        sentences,
+        max_chunk_tokens=chunk_size,
+        similarity_threshold=similarity_threshold
+    )
+
+    # filter tiny chunks
+    chunks = [c for c in chunks if len(c.strip()) > 10]
+
+    if chunk_overlap and chunk_overlap > 0:
+        final_chunks: List[str] = []
+        parsed_sent_lists = [list(get_nlp()(c).sents) for c in chunks]
+        for i, chunk in enumerate(chunks):
+            if i == 0:
+                final_chunks.append(chunk)
+                continue
+            prev_sents = parsed_sent_lists[i - 1]
+            overlap_n = min(len(prev_sents), chunk_overlap)
+            overlap_text = " ".join([s.text for s in prev_sents[-overlap_n:]]).strip()
+            combined = f"{overlap_text} {chunk}".strip() if overlap_text else chunk
+            final_chunks.append(combined)
+        return final_chunks
+
     return chunks
 
 
 def chunk_documents(
-    documents: list[Dict[str, Any]],
-    *,
-    chunk_size: int = int(os.getenv("INGESTION_CHUNK_SIZE", _DEFAULT_CHUNK_SIZE)),
-    chunk_overlap: int = int(os.getenv("INGESTION_CHUNK_OVERLAP", _DEFAULT_CHUNK_OVERLAP))
-) -> list[Dict[str, Any]]:
+    documents: List[Dict[str, Any]],
+    chunk_size: int = _DEFAULT_CHUNK_SIZE,
+    chunk_overlap: int = _DEFAULT_CHUNK_OVERLAP_SENTENCES,
+    similarity_threshold: float = _DEFAULT_SIMILARITY_THRESHOLD,
+) -> List[Dict[str, Any]]:
     """
-    Chunk multiple documents with metadata preservation.
-    
-    Args:
-        documents: List of dicts with 'content' and 'metadata' keys
-        chunk_size: Target chunk size (defaults to env var or 500)
-        chunk_overlap: Overlap between chunks (defaults to env var or 50)
-    
-    Returns:
-        List of chunk dicts with preserved and augmented metadata
-        
-    Example:
-        >>> docs = [{"content": "...", "metadata": {"source": "file.txt"}}]
-        >>> chunks = chunk_documents(docs)
-        >>> # Returns: [{"content": "chunk1", "metadata": {..., "chunk_index": 0}}]
+    documents: list of dicts with either:
+      - {"file_path": "<path>", "metadata": {...}}  OR
+      - {"content": "<text>", "metadata": {...}}
     """
-    all_chunks = []
-    
+    all_chunks: List[Dict[str, Any]] = []
+
     for doc in documents:
-        content = doc.get("content", "")
-        metadata = doc.get("metadata", {})
-        
-        # Chunk the content
+        if "file_path" in doc:
+            file_path = Path(doc["file_path"])
+            if not file_path.exists():
+                logger.error("File not found: %s", file_path)
+                continue
+            text = file_path.read_text(encoding="utf-8", errors="ignore")
+            metadata = {**doc.get("metadata", {}), "source": str(file_path), "file_type": file_path.suffix}
+        else:
+            text = doc.get("content", "")
+            metadata = doc.get("metadata", {})
+
         text_chunks = chunk_text(
-            content,
+            text,
             chunk_size=chunk_size,
-            chunk_overlap=chunk_overlap
+            chunk_overlap=chunk_overlap,
+            similarity_threshold=similarity_threshold
         )
-        
-        # Create chunk dicts with metadata
+
         for i, chunk in enumerate(text_chunks):
+            token_count = estimate_tokens(chunk)
             all_chunks.append({
                 "content": chunk,
                 "metadata": {
                     **metadata,
                     "chunk_index": i,
-                    "total_chunks": len(text_chunks)
+                    "total_chunks": len(text_chunks),
+                    "estimated_tokens": token_count
                 }
             })
-    
+
     return all_chunks
 
 
-def estimate_tokens(text: str) -> int:
-    """
-    Rough estimation of token count (assumes ~4 chars per token).
-    
-    Args:
-        text: Input text
-    
-    Returns:
-        Estimated token count
-    """
-    return len(text) // 4
-
-
-def truncate_to_token_limit(text: str, max_tokens: int) -> str:
-    """
-    Truncate text to approximately fit within token limit.
-    
-    Args:
-        text: Input text
-        max_tokens: Maximum token count
-    
-    Returns:
-        Truncated text
-    """
-    max_chars = max_tokens * 4
-    
-    if len(text) <= max_chars:
-        return text
-    
-    # Truncate and add indicator
-    truncated = text[:max_chars]
-    
-    # Try to cut at last sentence
-    last_period = truncated.rfind(". ")
-    if last_period > max_chars * 0.8:  # At least 80% of target length
-        truncated = truncated[:last_period + 1]
-    
-    return truncated + " [truncated]"
-
-
 if __name__ == "__main__":
-    # Test chunker
-    from dotenv import load_dotenv
-    load_dotenv()
-    
-    print("Testing chunker...")
-    
-    # Test simple chunking
-    test_text = """
-    VPN Troubleshooting Guide
-    
-    If you're experiencing VPN connection issues, follow these steps:
-    
-    1. Check your internet connection. Make sure you have a stable connection.
-    
-    2. Restart the VPN client. Close the application completely and reopen it.
-    
-    3. Check firewall settings. Ensure the VPN is allowed through your firewall.
-    
-    4. Try a different server. Sometimes server load can cause connection issues.
-    
-    5. Update your VPN client to the latest version.
-    
-    If none of these steps work, please contact IT support.
-    """
-    
-    chunks = chunk_text(test_text, chunk_size=100, chunk_overlap=20)
-    
-    print(f"\n✓ Created {len(chunks)} chunks:")
-    for i, chunk in enumerate(chunks):
-        print(f"\n  Chunk {i+1} ({len(chunk)} chars): {chunk[:60]}...")
-    
-    # Test document chunking
-    docs = [
-        {
-            "content": test_text,
-            "metadata": {
-                "source": "vpn_guide.md",
-                "category": "networking"
-            }
-        }
-    ]
-    
-    chunked_docs = chunk_documents(docs, chunk_size=150, chunk_overlap=30)
-    
-    print(f"\n✓ Chunked {len(chunked_docs)} document chunks:")
-    for i, chunk_doc in enumerate(chunked_docs[:2]):  # Show first 2
-        print(f"\n  Chunk {i+1}:")
-        print(f"    Content: {chunk_doc['content'][:50]}...")
-        print(f"    Index: {chunk_doc['metadata']['chunk_index']}/{chunk_doc['metadata']['total_chunks']}")
-    
-    # Test token estimation
-    tokens = estimate_tokens(test_text)
-    print(f"\n✓ Estimated {tokens} tokens")
-    
-    # Test truncation
-    truncated = truncate_to_token_limit(test_text, max_tokens=50)
-    print(f"\n✓ Truncated to 50 tokens ({len(truncated)} chars):")
-    print(f"  {truncated[:100]}...")
+    out_folder = Path(__file__).parent / "out"
+    if not out_folder.exists():
+        raise FileNotFoundError(f"Could not find 'out' folder: {out_folder}")
+
+    txt_files = list(out_folder.glob("*.txt"))
+    if not txt_files:
+        logger.info("No TXT files found in the 'out' folder.")
+        raise SystemExit(0)
+
+    for txt_file in txt_files:
+        logger.info("Loading and chunking: %s", txt_file.name)
+        text = txt_file.read_text(encoding="utf-8", errors="ignore")
+        docs = [{"content": text, "metadata": {"source": str(txt_file), "file_type": ".txt"}}]
+        chunks = chunk_documents(docs)
+
+        logger.info("Created %d chunks from %s", len(chunks), txt_file.name)
+
+        output_file = out_folder / f"{txt_file.stem}_chunks.json"
+        with open(output_file, "w", encoding="utf-8") as f:
+            json.dump(chunks, f, ensure_ascii=False, indent=2)
+
+        logger.info("Chunks saved to: %s", output_file)

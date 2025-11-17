@@ -16,6 +16,7 @@ COPY requirements.txt .
 
 # Install Python dependencies
 RUN pip install -r requirements.txt
+RUN python -m spacy download en_core_web_sm
 
 # Copy application code
 COPY utils/ ./utils/
