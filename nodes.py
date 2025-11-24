@@ -317,14 +317,6 @@ analyze the context and decide the next action to help the employee efficiently.
     - Missing critical information (error codes, software versions, symptoms)
     - Multiple interpretations of the problem are possible
 
-### DECISION RULES & GUARDRAILS
-- IMPORTANT: You have searched {context['search_count']} times (max: {context['max_searches']}). If at max, you MUST choose 'answer' (with best available info), 'clarify' or 'create_ticket', NOT 'search_kb'
-- If intent confidence < 0.7 OR query contains ambiguous terms (e.g., "it", "that", "the problem") OR critical info is missing → clarify
-- If intent is factual AND retrieved document provides a clear, direct solution → answer
-- If user message contains explicit error codes, logs, or attachments → troubleshoot (unless 'search_kb' finds an exact-match).
-- If intent = troubleshooting + no workflow started → troubleshoot (or answer if we have the document)
-- Use 'create_ticket' after other resolution paths ('search_kb', troubleshoot) are exhausted or if the issue requires privileges/physical access.
-- If the same document keep appearing in searches, do not search again. 'answer' with the best information you have.
 ### DECISION RULES
 - IMPORTANT: You have searched {context['search_count']} times (max: {context['max_searches']}). If at max, you MUST choose 'answer' or 'clarify', NOT 'search_kb'
 - If confidence < {clarify_threshold:.2f} in understanding query → clarify
