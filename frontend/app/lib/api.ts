@@ -21,3 +21,16 @@ export async function getJSON<TRes = any>(path: string): Promise<TRes> {
   }
   return res.json();
 }
+
+export async function postFormData<TRes = any>(path: string, formData: FormData): Promise<TRes> {
+  const res = await fetch(`${API_BASE_URL}${path}`, {
+    method: "POST",
+    body: formData,
+    // Note: Don't set Content-Type header, browser will set it with boundary for multipart/form-data
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Request failed ${res.status}: ${text}`);
+  }
+  return res.json();
+}

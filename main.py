@@ -7,9 +7,10 @@ import logging
 from datetime import datetime
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
+from typing import List
 
 # Import flows
 from flows import get_flow
@@ -21,10 +22,12 @@ from models import (
     QueryResponse,
     IndexRequest,
     IndexResponse,
+    FileUploadResponse,
     HealthResponse,
     SessionClearResponse,
     SessionHistoryResponse,
     SessionCleanupResponse,
+    CollectionInfoResponse,
 )
 
 # Load environment variables 
@@ -35,6 +38,10 @@ load_dotenv()
 log_level = os.getenv("LOG_LEVEL", "INFO")
 log_file_enabled = os.getenv("LOG_FILE_ENABLED", "true").lower() == "true"
 log_file_path = os.getenv("LOG_FILE_PATH", "./logs/app.log")
+
+# Create logs directory if it doesn't exist
+if log_file_enabled:
+    os.makedirs(os.path.dirname(log_file_path), exist_ok=True)
 
 logging.basicConfig(
     level=log_level,
@@ -119,6 +126,102 @@ async def health_check():
         "timestamp": datetime.now().isoformat(),
         "version": "1.0.0"
     }
+
+
+@app.get("/collection/info", response_model=CollectionInfoResponse)
+async def get_collection_info(
+    limit: int = 100,
+    offset: int = 0,
+    collection_name: str = os.getenv("CHROMADB_COLLECTION", "it_support_docs")
+):
+    """
+    Get information about documents in the ChromaDB collection.
+    
+    Args:
+        limit: Maximum number of documents to return (default: 100)
+        offset: Number of documents to skip (default: 0)
+        collection_name: Name of the collection (default: from env)
+    
+    Returns:
+        Collection information with document list
+        
+    Raises:
+        HTTPException: If collection access fails
+    """
+    try:
+        from utils.chromadb_client import get_collection
+        
+        collection = get_collection(collection_name=collection_name)
+        total_count = collection.count()
+        
+        # Get all documents to group by source file
+        result = collection.get(
+            include=["documents", "metadatas"]
+        )
+        
+        # Group documents by source file
+        grouped_docs = {}
+        ids = result.get("ids", []) or []
+        docs = result.get("documents", []) or []
+        metadatas = result.get("metadatas", []) or []
+        
+        for i in range(len(ids)):
+            doc_text = docs[i] if i < len(docs) and docs[i] else ""
+            metadata = metadatas[i] if i < len(metadatas) and metadatas[i] else {}
+            
+            source_file = metadata.get("source_file", "Unknown")
+            filename = metadata.get("filename", "Unknown")
+            
+            if source_file not in grouped_docs:
+                grouped_docs[source_file] = {
+                    "filename": filename,
+                    "source_file": source_file,
+                    "extension": metadata.get("extension", metadata.get("file_type", "unknown")),
+                    "chunks": []
+                }
+            
+            grouped_docs[source_file]["chunks"].append({
+                "id": ids[i],
+                "content": doc_text,
+                "chunk_index": metadata.get("chunk_index", 0)
+            })
+        
+        # Format grouped documents
+        documents = []
+        for source_file, doc_info in grouped_docs.items():
+            # Sort chunks by index
+            doc_info["chunks"].sort(key=lambda x: x.get("chunk_index", 0))
+            
+            # Get first chunk for preview
+            first_chunk = doc_info["chunks"][0]["content"] if doc_info["chunks"] else ""
+            doc_preview = first_chunk[:200] + "..." if len(first_chunk) > 200 else first_chunk
+            
+            documents.append({
+                "id": f"{source_file}_grouped",
+                "content": doc_preview,
+                "metadata": {
+                    "filename": doc_info["filename"],
+                    "source_file": source_file,
+                    "extension": doc_info["extension"],
+                    "chunk_count": len(doc_info["chunks"])
+                },
+                "chunks": doc_info["chunks"]
+            })
+        
+        # Apply pagination
+        paginated_docs = documents[offset:offset + limit]
+        
+        logger.info(f"Retrieved {len(documents)} unique documents (grouped from {total_count} chunks)")
+        
+        return {
+            "collection_name": collection_name,
+            "total_documents": len(documents),
+            "documents": paginated_docs
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to get collection info: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get collection info: {str(e)}")
 
 
 @app.post("/query", response_model=QueryResponse)
@@ -241,6 +344,199 @@ async def index_documents(request: IndexRequest):
     except Exception as e:
         logger.error(f"Error indexing documents: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error indexing documents: {str(e)}")
+
+
+@app.post("/upload", response_model=FileUploadResponse)
+async def upload_documents(files: List[UploadFile] = File(...)):
+    """
+    Upload and index multiple documents into the knowledge base.
+    
+    Supports .txt, .md, .html, .pdf files up to 100MB each.
+    
+    Args:
+        files: List of files to upload and index
+    
+    Returns:
+        Upload and indexing results
+        
+    Raises:
+        HTTPException: If upload or indexing fails
+    """
+    import tempfile
+    import shutil
+    from pathlib import Path
+    
+    # Configuration
+    MAX_FILE_SIZE = 100 * 1024 * 1024  # 100MB
+    ALLOWED_EXTENSIONS = {".txt", ".md", ".html", ".pdf"}
+    
+    uploaded_files = []
+    failed_files = []
+    file_details = []
+    
+    # Create temporary directory for uploaded files
+    temp_dir = tempfile.mkdtemp(prefix="upload_")
+    
+    try:
+        logger.info(f"Processing {len(files)} uploaded files")
+        
+        # Save uploaded files to temporary directory
+        for file in files:
+            try:
+                # Validate filename exists
+                if not file.filename:
+                    failed_files.append({
+                        "filename": "unknown",
+                        "error": "Missing filename"
+                    })
+                    continue
+                
+                # Validate file extension
+                file_ext = Path(file.filename).suffix.lower()
+                if file_ext not in ALLOWED_EXTENSIONS:
+                    failed_files.append({
+                        "filename": file.filename,
+                        "error": f"Unsupported file type. Allowed: {', '.join(ALLOWED_EXTENSIONS)}"
+                    })
+                    logger.warning(f"Rejected file {file.filename}: unsupported extension {file_ext}")
+                    continue
+                
+                # Read file content
+                content = await file.read()
+                file_size = len(content)
+                
+                # Validate file size
+                if file_size > MAX_FILE_SIZE:
+                    failed_files.append({
+                        "filename": file.filename,
+                        "error": f"File too large ({file_size / 1024 / 1024:.1f}MB). Max: 100MB"
+                    })
+                    logger.warning(f"Rejected file {file.filename}: too large ({file_size} bytes)")
+                    continue
+                
+                # Validate file is not empty
+                if file_size == 0:
+                    failed_files.append({
+                        "filename": file.filename,
+                        "error": "File is empty"
+                    })
+                    logger.warning(f"Rejected file {file.filename}: empty file")
+                    continue
+                
+                # Save to temporary directory
+                temp_filepath = Path(temp_dir) / file.filename
+                with open(temp_filepath, "wb") as f:
+                    f.write(content)
+                
+                uploaded_files.append({
+                    "filename": file.filename,
+                    "filepath": str(temp_filepath),
+                    "size_bytes": file_size
+                })
+                
+                logger.info(f"Saved uploaded file: {file.filename} ({file_size} bytes)")
+                
+            except Exception as e:
+                failed_files.append({
+                    "filename": file.filename,
+                    "error": str(e)
+                })
+                logger.error(f"Error processing file {file.filename}: {e}")
+        
+        # If no files were successfully uploaded, return early
+        if not uploaded_files:
+            return {
+                "status": "failed",
+                "files_uploaded": 0,
+                "files_failed": len(failed_files),
+                "chunks_indexed": 0,
+                "file_details": failed_files
+            }
+        
+        # Index the uploaded files
+        logger.info(f"Indexing {len(uploaded_files)} uploaded files from {temp_dir}")
+        
+        shared = {
+            "source_dir": temp_dir
+        }
+        
+        # Get and run the indexing flow
+        flow = get_flow("indexing")
+        flow.run(shared)
+        
+        # Extract indexing results
+        documents = shared.get("documents", [])
+        all_chunks = shared.get("all_chunks", [])
+        chunks_indexed = shared.get("indexed_count", 0)
+        
+        # Build detailed results for each file
+        for uploaded_file in uploaded_files:
+            # Find matching document
+            matching_doc = None
+            for doc in documents:
+                if isinstance(doc, dict) and "metadata" in doc:
+                    doc_metadata = doc.get("metadata", {})
+                    if isinstance(doc_metadata, dict) and doc_metadata.get("filename") == uploaded_file["filename"]:
+                        matching_doc = doc
+                        break
+            
+            if matching_doc:
+                # Count chunks for this file
+                chunks_for_file = 0
+                chunk_metadata_list = shared.get("chunk_metadata", [])
+                if isinstance(chunk_metadata_list, list):
+                    for chunk_meta in chunk_metadata_list:
+                        if isinstance(chunk_meta, dict):
+                            source_file = chunk_meta.get("source_file", "")
+                            if isinstance(source_file, str) and source_file.endswith(uploaded_file["filename"]):
+                                chunks_for_file += 1
+                
+                file_details.append({
+                    "filename": uploaded_file["filename"],
+                    "size_bytes": uploaded_file["size_bytes"],
+                    "chunks_created": chunks_for_file,
+                    "status": "indexed"
+                })
+            else:
+                file_details.append({
+                    "filename": uploaded_file["filename"],
+                    "size_bytes": uploaded_file["size_bytes"],
+                    "chunks_created": 0,
+                    "status": "failed",
+                    "error": "Not found in indexing results"
+                })
+        
+        # Add failed files to details
+        for failed_file in failed_files:
+            file_details.append({
+                "filename": failed_file["filename"],
+                "size_bytes": 0,
+                "chunks_created": 0,
+                "status": "rejected",
+                "error": failed_file["error"]
+            })
+        
+        logger.info(f"Upload completed: {len(uploaded_files)} files uploaded, {chunks_indexed} chunks indexed")
+        
+        return {
+            "status": "success" if not failed_files else "partial_success",
+            "files_uploaded": len(uploaded_files),
+            "files_failed": len(failed_files),
+            "chunks_indexed": chunks_indexed,
+            "file_details": file_details
+        }
+        
+    except Exception as e:
+        logger.error(f"Error during upload/indexing: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error processing upload: {str(e)}")
+    
+    finally:
+        # Cleanup temporary directory
+        try:
+            shutil.rmtree(temp_dir)
+            logger.info(f"Cleaned up temporary directory: {temp_dir}")
+        except Exception as e:
+            logger.warning(f"Failed to cleanup temporary directory {temp_dir}: {e}")
 
 
 @app.delete("/session/{session_id}", response_model=SessionClearResponse)
