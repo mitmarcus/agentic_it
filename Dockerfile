@@ -30,13 +30,6 @@ COPY main.py .
 # Create directories
 RUN mkdir -p logs data/docs
 
-# Copy everything to temp location, then selectively move docs if they exist
-COPY . /tmp/buildctx/
-RUN if [ -d /tmp/buildctx/data/docs ] && [ "$(ls -A /tmp/buildctx/data/docs)" ]; then \
-    cp -r /tmp/buildctx/data/docs/* data/docs/ || true; \
-    fi && \
-    rm -rf /tmp/buildctx
-
 # Expose port
 EXPOSE 8000
 
