@@ -30,38 +30,84 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def _get_float_env(name: str, default: float) -> float:
-    """Safely read a float from environment variables."""
+def _get_float_env(name: str) -> float:
+    """Read a required float from environment variables. Raises ValueError if missing or invalid."""
     raw_value = os.getenv(name)
     if raw_value is None:
-        return float(default)
+        raise ValueError(f"Environment variable {name} must be set")
     try:
         return float(raw_value)
     except ValueError:
-        logger.warning("Invalid float for %s=%s, using default %.2f", name, raw_value, default)
-        return float(default)
+        raise ValueError(f"Environment variable {name}={raw_value} is not a valid float")
 
 
-def _get_int_env(name: str, default: int) -> int:
-    """Safely read an int from environment variables."""
+def _get_int_env(name: str) -> int:
+    """Read a required int from environment variables. Raises ValueError if missing or invalid."""
     raw_value = os.getenv(name)
     if raw_value is None:
-        return int(default)
+        raise ValueError(f"Environment variable {name} must be set")
     try:
         return int(raw_value)
     except ValueError:
-        logger.warning("Invalid int for %s=%s, using default %d", name, raw_value, default)
-        return int(default)
+        raise ValueError(f"Environment variable {name}={raw_value} is not a valid integer")
 
 
 POLICY_LIMITS = {
-    "clarify_confidence_threshold": _get_float_env("AGENT_CLARIFY_CONFIDENCE_THRESHOLD", 0.7),
-    "doc_confidence_threshold": _get_float_env("AGENT_DOC_CONFIDENCE_THRESHOLD", 0.6),
-    "rate_limit_answer_confidence": _get_float_env("AGENT_RATE_LIMIT_ANSWER_CONFIDENCE", 0.5),
-    "system_error_confidence": _get_float_env("AGENT_SYSTEM_ERROR_CONFIDENCE", 0.3),
-    "troubleshoot_escalate_failed_steps": _get_int_env("TROUBLESHOOT_ESCALATE_FAILED_STEPS", 3),
-    "troubleshoot_fallback_failed_steps": _get_int_env("TROUBLESHOOT_FALLBACK_FAILED_STEPS", 2),
+    "clarify_confidence_threshold": _get_float_env("AGENT_CLARIFY_CONFIDENCE_THRESHOLD"),
+    "doc_confidence_threshold": _get_float_env("AGENT_DOC_CONFIDENCE_THRESHOLD"),
+    "rate_limit_answer_confidence": _get_float_env("AGENT_RATE_LIMIT_ANSWER_CONFIDENCE"),
+    "system_error_confidence": _get_float_env("AGENT_SYSTEM_ERROR_CONFIDENCE"),
+    "troubleshoot_escalate_failed_steps": _get_int_env("TROUBLESHOOT_ESCALATE_FAILED_STEPS"),
+    "troubleshoot_fallback_failed_steps": _get_int_env("TROUBLESHOOT_FALLBACK_FAILED_STEPS"),
 }
+
+
+# ============================================================================
+# Node 0: RedactInputNode
+# ============================================================================
+
+class RedactInputNode(Node):
+    """Redact sensitive information from user input."""
+    
+    def prep(self, shared: Dict) -> Dict:
+        """Read raw user query and session ID."""
+        return {
+            "query": shared.get("user_query", ""),
+            "session_id": shared.get("session_id", "unknown")
+        }
+    
+    def exec(self, prep_data: Dict) -> Dict:
+        """Redact sensitive data and log if found."""
+        query = prep_data["query"]
+        session_id = prep_data["session_id"]
+        
+        redacted_query = redact_text(query)
+        has_sensitive = query != redacted_query
+        
+        if has_sensitive:
+            logger.warning(f"Redacted sensitive data from query for session {session_id}")
+        
+        return {
+            "redacted_query": redacted_query,
+            "had_sensitive_data": has_sensitive
+        }
+    
+    def post(self, shared: Dict, prep_res: Dict, exec_res: Dict) -> str:
+        """Replace user_query with redacted version and notify user if redacted."""
+        # Store original for logging only
+        shared["original_query"] = prep_res["query"]
+        # Replace with redacted version for all downstream nodes
+        shared["user_query"] = exec_res["redacted_query"]
+        shared["had_sensitive_data"] = exec_res["had_sensitive_data"]
+        
+        # If redaction occurred, add a warning message for the user
+        if exec_res["had_sensitive_data"]:
+            shared["redaction_notice"] = (
+                "⚠️ For your security, sensitive information has been redacted from your message. "
+                "Please avoid sharing passwords, API keys, or other credentials."
+            )
+        
+        return "default"
 
 
 # ============================================================================
@@ -151,10 +197,10 @@ class SearchKnowledgeBaseNode(Node):
             logger.warning("Empty or zero embedding, skipping search")
             return []
         
-        # Improved: Fetch more candidates for better coverage (5 instead of 3)
-        top_k = int(os.getenv("RAG_TOP_K", "5"))
-        # Improved: Slightly higher threshold for better quality (0.65 instead of 0.6)
-        min_score = float(os.getenv("RAG_MIN_SCORE", "0.65"))
+        # Fetch candidates for coverage
+        top_k = _get_int_env("RAG_TOP_K")
+        # Threshold for quality filtering
+        min_score = _get_float_env("RAG_MIN_SCORE")
         
         # Query collection
         results = query_collection(query_embedding, top_k=top_k)
@@ -247,7 +293,7 @@ class DecisionMakerNode(Node):
         
         # Track search attempts to prevent infinite loops
         search_count = shared.get("search_count", 0)
-        max_searches = int(os.getenv("AGENT_MAX_TURNS", "5"))
+        max_searches = _get_int_env("AGENT_MAX_TURNS")
         
         return {
             "user_query": shared.get("user_query", ""),
@@ -1113,9 +1159,9 @@ class ChunkDocumentsNode(BatchNode):
         content = document.get("content", "")
         metadata = document.get("metadata", {})
         
-        # Improved: Larger chunks (800 tokens) for better context, more overlap (100 tokens) for continuity
-        chunk_size = int(os.getenv("INGESTION_CHUNK_SIZE", "800"))
-        chunk_overlap = int(os.getenv("INGESTION_CHUNK_OVERLAP", "100"))
+        # Chunk configuration from environment
+        chunk_size = _get_int_env("INGESTION_CHUNK_SIZE")
+        chunk_overlap = _get_int_env("INGESTION_CHUNK_OVERLAP")
 
         chunks = chunk_text(content, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
 

@@ -7,7 +7,6 @@ from typing import Pattern
 # Default configuration
 _DEFAULT_REPLACEMENT = "[REDACTED]"
 _ALL_PATTERN_NAMES = (
-    "email", "ip_address", "phone", "ssn", "credit_card",
     "api_key", "password_field", "token", "aws_key", "private_key"
 )
 
@@ -20,13 +19,8 @@ _SENSITIVE_KEYS = {
 
 # Redaction patterns
 PATTERNS: dict[str, Pattern] = {
-    "email": re.compile(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'),
-    "ip_address": re.compile(r'\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b'),
-    "phone": re.compile(r'\b(?:\+?1[-.]?)?\(?([0-9]{3})\)?[-.]?([0-9]{3})[-.]?([0-9]{4})\b'),
-    "ssn": re.compile(r'\b\d{3}-\d{2}-\d{4}\b'),
-    "credit_card": re.compile(r'\b(?:\d{4}[-\s]?){3}\d{4}\b'),
     "api_key": re.compile(r'\b[A-Za-z0-9]{32,}\b'),
-    "password_field": re.compile(r'(?i)(password|pwd|passwd)\s*[:=]\s*[^\s]+'),
+    "password_field": re.compile(r'(?i)(password|pwd|passwd|pass)\s*(?:is|:|\=)\s*[\w\d]+'),
     "token": re.compile(r'(?i)(token|bearer)\s*[:=]?\s*[A-Za-z0-9\-._~+/]+=*'),
     "aws_key": re.compile(r'(?i)(aws_access_key_id|aws_secret_access_key)\s*[:=]\s*[A-Za-z0-9/+=]+'),
     "private_key": re.compile(r'-----BEGIN (?:RSA |EC )?PRIVATE KEY-----[\s\S]+?-----END (?:RSA |EC )?PRIVATE KEY-----'),
@@ -51,8 +45,8 @@ def redact_text(
         Redacted text
         
     Example:
-        >>> redact_text("Email: test@example.com", patterns=("email",))
-        'Email: [REDACTED]'
+        >>> redact_text("password: secret123", patterns=("password_field",))
+        'password [REDACTED]'
     """
     if not text:
         return text
@@ -62,7 +56,11 @@ def redact_text(
     for pattern_name in patterns:
         if pattern_name in PATTERNS:
             pattern = PATTERNS[pattern_name]
-            redacted = pattern.sub(replacement, redacted)
+            # Special handling for password_field to preserve context
+            if pattern_name == "password_field":
+                redacted = pattern.sub(lambda m: m.group(1) + ' ' + replacement, redacted)
+            else:
+                redacted = pattern.sub(replacement, redacted)
     
     return redacted
 
@@ -94,8 +92,8 @@ def redact_dict(
         Dictionary with redacted values
         
     Example:
-        >>> redact_dict({"password": "secret123", "email": "test@example.com"})
-        {'password': '[REDACTED]', 'email': '[REDACTED]'}
+        >>> redact_dict({"password": "secret123", "api_key": "abc123"})
+        {'password': '[REDACTED]', 'api_key': '[REDACTED]'}
     """
     if not isinstance(data, dict):
         return data
@@ -135,7 +133,7 @@ def is_sensitive(
         True if sensitive data detected
         
     Example:
-        >>> is_sensitive("Email: test@example.com", patterns=("email",))
+        >>> is_sensitive("password: secret123", patterns=("password_field",))
         True
     """
     if not text:
@@ -165,8 +163,8 @@ def get_redaction_summary(
         Dict mapping pattern names to count of matches
         
     Example:
-        >>> get_redaction_summary("test@example.com 555-1234")
-        {'email': 1, 'phone': 1}
+        >>> get_redaction_summary("password: secret123 token: abc")
+        {'password_field': 1, 'token': 1}
     """
     if not text:
         return {}
@@ -189,9 +187,7 @@ if __name__ == "__main__":
     # Test text with sensitive data
     test_text = """
     User report:
-    My email is john.doe@company.com and my phone is 555-123-4567.
     I tried to login with password=MySecret123 but got an error.
-    My IP address is 192.168.1.100.
     Here's my API key: abcdef1234567890abcdef1234567890
     AWS credentials: aws_access_key_id=AKIAIOSFODNN7EXAMPLE
     """
@@ -215,13 +211,13 @@ if __name__ == "__main__":
     
     # Test dictionary redaction
     test_dict = {
-        "user": "john.doe@company.com",
+        "user": "john_doe",
         "details": {
             "password": "secret123",
-            "notes": "Contact at 555-123-4567"
+            "notes": "Test notes"
         },
         "logs": [
-            "Connected from 192.168.1.100",
+            "Connection successful",
             "API key: abcd1234567890abcd1234567890abcd"
         ]
     }
