@@ -31,6 +31,7 @@ export default function IngestPage() {
   const [selectedDoc, setSelectedDoc] = useState<CollectionDocument | null>(
     null
   );
+  const [deletingDoc, setDeletingDoc] = useState<string | null>(null);
 
   // Fetch service health and collection info on mount
   useEffect(() => {
@@ -56,6 +57,35 @@ export default function IngestPage() {
       console.error("Error fetching collection info:", error);
     } finally {
       setLoadingCollection(false);
+    }
+  };
+
+  const handleDeleteDocument = async (sourceFile: string, filename: string) => {
+    if (!confirm(`Are you sure you want to delete "${filename}"? This will remove all chunks from the knowledge base.`)) {
+      return;
+    }
+
+    setDeletingDoc(sourceFile);
+    try {
+      const encodedPath = encodeURIComponent(sourceFile);
+      const response = await fetch(`http://localhost:8000/documents/${encodedPath}`, {
+        method: "DELETE",
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to delete document: ${response.statusText}`);
+      }
+
+      const result = await response.json();
+      console.log("Delete result:", result);
+
+      // Refresh the collection info
+      await fetchCollectionInfo();
+    } catch (error) {
+      console.error("Error deleting document:", error);
+      alert(`Failed to delete document: ${error}`);
+    } finally {
+      setDeletingDoc(null);
     }
   };
 
@@ -123,6 +153,9 @@ export default function IngestPage() {
                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                       Content Preview
                     </th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Actions
+                    </th>
                   </tr>
                 </thead>
                 <tbody className="bg-white divide-y divide-gray-200">
@@ -141,6 +174,22 @@ export default function IngestPage() {
                       </td>
                       <td className="px-4 py-3 text-sm text-gray-600 max-w-lg truncate">
                         {doc.content}
+                      </td>
+                      <td className="px-4 py-3 text-sm text-gray-600">
+                        <button
+                          onClick={() =>
+                            handleDeleteDocument(
+                              doc.metadata.source_file,
+                              doc.metadata.filename
+                            )
+                          }
+                          disabled={deletingDoc === doc.metadata.source_file}
+                          className="px-3 py-1 bg-red-600 text-white rounded hover:bg-red-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors text-xs"
+                        >
+                          {deletingDoc === doc.metadata.source_file
+                            ? "Deleting..."
+                            : "Delete"}
+                        </button>
                       </td>
                     </tr>
                   ))}

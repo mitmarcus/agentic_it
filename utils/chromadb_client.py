@@ -223,6 +223,41 @@ def query_collection(
     return formatted_results
 
 
+def delete_documents_by_source(
+    source_file: str,
+    *,
+    collection_name: str = os.getenv("CHROMADB_COLLECTION", _DEFAULT_COLLECTION_NAME)
+) -> int:
+    """
+    Delete all documents from a specific source file.
+    
+    Args:
+        source_file: Source file path to delete
+        collection_name: Collection name (defaults to env var or 'it_support_docs')
+    
+    Returns:
+        Number of documents deleted
+        
+    Example:
+        >>> deleted = delete_documents_by_source("./data/docs/guide.md")
+    """
+    collection = get_collection(collection_name=collection_name)
+    
+    # Get all documents with this source file
+    results = collection.get(
+        where={"source_file": source_file},
+        include=["documents"]
+    )
+    
+    ids_to_delete = results.get("ids", [])
+    
+    if ids_to_delete:
+        collection.delete(ids=ids_to_delete)
+        print(f"Deleted {len(ids_to_delete)} documents from source: {source_file}")
+    
+    return len(ids_to_delete)
+
+
 def delete_collection(
     *,
     collection_name: str = os.getenv("CHROMADB_COLLECTION", _DEFAULT_COLLECTION_NAME)
