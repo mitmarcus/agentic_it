@@ -9,6 +9,7 @@ from langfuse_tracing import trace_flow, TracingConfig
 from cremedelacreme import AsyncFlow, Flow
 from nodes import (
     # Online query nodes
+    RedactInputNode,
     IntentClassificationNode,
     EmbedQueryNode,
     SearchKnowledgeBaseNode,
@@ -46,6 +47,7 @@ class QueryFlow(Flow):
     """Main query answering flow with tracing."""
     def __init__(self):
         # Create nodes
+        redact_node = RedactInputNode()
         intent_node = IntentClassificationNode()
         embed_node = EmbedQueryNode()
         search_node = SearchKnowledgeBaseNode()
@@ -62,8 +64,8 @@ class QueryFlow(Flow):
         create_ticket_node = NotImplementedNode("Ticket creation")
         
         # Connect nodes
-        # Linear path: intent -> embed -> check network status -> search
-        _ = intent_node >> embed_node >> search_node
+        # Linear path: redact -> intent -> embed -> search
+        _ = redact_node >> intent_node >> embed_node >> search_node
         
         # Search can go to decision maker regardless of whether docs found
         _ = search_node - "docs_found" >> decision_node
@@ -84,8 +86,8 @@ class QueryFlow(Flow):
         _ = search_tickets_node >> format_node
         _ = create_ticket_node >> format_node
         
-        # Initialize Flow with start node
-        super().__init__(start=intent_node)
+        # Initialize Flow with start node (redact first!)
+        super().__init__(start=redact_node)
         
         logger.info("Query flow created with tracing")
 
@@ -188,6 +190,7 @@ class SimpleQueryFlow(Flow):
     """Simplified query flow for testing with tracing."""
     def __init__(self):
         # Create nodes
+        redact_node = RedactInputNode()
         intent_node = IntentClassificationNode()
         embed_node = EmbedQueryNode()
         query_node = StatusQueryNode()
@@ -196,7 +199,7 @@ class SimpleQueryFlow(Flow):
         format_node = FormatFinalResponseNode()
         
         # Simple linear flow
-        _ = intent_node >> embed_node >> query_node >> search_node
+        _ = redact_node >> intent_node >> embed_node >> query_node >> search_node
         
         # Both search outcomes go to answer
         _ = search_node - "docs_found" >> answer_node
@@ -205,7 +208,7 @@ class SimpleQueryFlow(Flow):
         _ = answer_node >> format_node
         
         # Initialize Flow with start node
-        super().__init__(start=intent_node)
+        super().__init__(start=redact_node)
         
         logger.info("Simple query flow created with tracing")
 

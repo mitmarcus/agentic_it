@@ -282,6 +282,10 @@ async def process_query(request: QueryRequest):
         action_taken = response_data.get("action_taken", "unknown")
         requires_followup = response_data.get("requires_followup", False)
         
+        # Prepend redaction notice if sensitive data was detected
+        if shared.get("redaction_notice"):
+            response_text = shared["redaction_notice"] + "\n\n" + response_text
+        
         # Prepare metadata
         metadata = {
             "intent": shared.get("intent", {}),
