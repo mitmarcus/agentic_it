@@ -28,6 +28,7 @@ from models import (
     SessionHistoryResponse,
     SessionCleanupResponse,
     CollectionInfoResponse,
+    DeleteDocumentResponse,
 )
 
 # Load environment variables 
@@ -623,6 +624,49 @@ async def cleanup_old_sessions(max_age_hours: int = 24):
     except Exception as e:
         logger.error(f"Error cleaning up sessions: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error cleaning up sessions: {str(e)}")
+
+
+@app.delete("/documents/{source_file:path}", response_model=DeleteDocumentResponse)
+async def delete_document(source_file: str):
+    """
+    Delete a document and all its chunks from the knowledge base.
+    
+    Args:
+        source_file: Source file path to delete (URL encoded)
+    
+    Returns:
+        Deletion results
+        
+    Raises:
+        HTTPException: If deletion fails
+    """
+    try:
+        from utils.chromadb_client import delete_documents_by_source
+        
+        logger.info(f"Deleting document: {source_file}")
+        
+        # Delete all chunks for this source file
+        chunks_deleted = delete_documents_by_source(source_file)
+        
+        if chunks_deleted == 0:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No documents found for source file: {source_file}"
+            )
+        
+        logger.info(f"Successfully deleted {chunks_deleted} chunks from {source_file}")
+        
+        return {
+            "status": "success",
+            "chunks_deleted": chunks_deleted,
+            "source_file": source_file
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting document: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error deleting document: {str(e)}")
 
 
 # ============================================================================

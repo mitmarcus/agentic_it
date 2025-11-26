@@ -187,6 +187,29 @@ class CollectionInfoResponse(BaseModel):
 
 
 # ============================================================================
+# Document Deletion Model
+# ============================================================================
+
+class DeleteDocumentResponse(BaseModel):
+    """Response model for document deletion."""
+    status: str = Field(..., description="Deletion operation status")
+    chunks_deleted: int = Field(..., description="Number of chunks deleted")
+    source_file: str = Field(..., description="Source file that was deleted")
+
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "status": "success",
+                    "chunks_deleted": 15,
+                    "source_file": "./data/docs/guide.txt"
+                }
+            ]
+        }
+    }
+
+
+# ============================================================================
 # Health Check Model
 # ============================================================================
 
