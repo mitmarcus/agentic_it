@@ -83,12 +83,18 @@ curl -X POST http://localhost:8000/query \
   }'
 ```
 
-**Index Documents**
+**Upload and Index Documents**
 
 ```bash
-curl -X POST http://localhost:8000/index \
-  -H "Content-Type: application/json" \
-  -d '{"source_dir": "./data/docs"}'
+# Upload single file
+curl -X POST http://localhost:8000/upload \
+  -F "files=@/path/to/document.txt"
+
+# Upload multiple files
+curl -X POST http://localhost:8000/upload \
+  -F "files=@/path/to/doc1.txt" \
+  -F "files=@/path/to/doc2.md" \
+  -F "files=@/path/to/doc3.html"
 ```
 
 **Get Conversation History**

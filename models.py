@@ -124,6 +124,69 @@ class SessionCleanupResponse(BaseModel):
 
 
 # ============================================================================
+# File Upload Models
+# ============================================================================
+
+class FileUploadResponse(BaseModel):
+    """Response model for file upload and indexing."""
+    status: str = Field(..., description="Upload operation status")
+    files_uploaded: int = Field(..., description="Number of files successfully uploaded")
+    files_failed: int = Field(..., description="Number of files that failed to upload")
+    chunks_indexed: int = Field(..., description="Total chunks indexed from uploaded files")
+    file_details: list = Field(default_factory=list, description="Details about each uploaded file")
+
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "status": "success",
+                    "files_uploaded": 3,
+                    "files_failed": 0,
+                    "chunks_indexed": 45,
+                    "file_details": [
+                        {
+                            "filename": "guide.txt",
+                            "size_bytes": 1024,
+                            "chunks_created": 15,
+                            "status": "indexed"
+                        }
+                    ]
+                }
+            ]
+        }
+    }
+
+
+# ============================================================================
+# Collection Info Model
+# ============================================================================
+
+class CollectionInfoResponse(BaseModel):
+    """Response model for collection information."""
+    collection_name: str = Field(..., description="Name of the collection")
+    total_documents: int = Field(..., description="Total number of documents in collection")
+    documents: list = Field(default_factory=list, description="List of documents with metadata")
+
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "collection_name": "it_support_docs",
+                    "total_documents": 150,
+                    "documents": [
+                        {
+                            "id": "doc123",
+                            "content": "VPN setup guide...",
+                            "metadata": {"source_file": "vpn.txt", "filename": "vpn.txt"}
+                        }
+                    ]
+                }
+            ]
+        }
+    }
+
+
+# ============================================================================
 # Health Check Model
 # ============================================================================
 
