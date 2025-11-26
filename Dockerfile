@@ -1,25 +1,31 @@
-# Backend Dockerfile
-# seems to work better than FROM python:slim
-FROM python:3.13-slim 
+# Stage 1: Builder
+FROM python:3.13-slim AS builder
 
-# Set working directory
 WORKDIR /app
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    curl \
-    && rm -rf /var/lib/apt/lists/*
-
-# Copy requirements first for better caching
+# Copy requirements
 COPY requirements.txt .
 
-# Install Python dependencies
-RUN pip install -r requirements.txt
-RUN python -m spacy download en_core_web_sm
+# Install dependencies 
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --prefer-binary -r requirements.txt && \
+    python -m spacy download en_core_web_sm && \
+    playwright install --with-deps chromium
 
-# Install Playwright browser for status querying
-RUN playwright install --with-deps chromium
+# Stage 2: Runtime - Minimal image
+FROM python:3.13-slim AS runtime
+
+WORKDIR /app
+
+# Copy installed packages and binaries from builder
+COPY --from=builder /usr/local/lib/python3.13/site-packages /usr/local/lib/python3.13/site-packages
+COPY --from=builder /usr/local/bin /usr/local/bin
+COPY --from=builder /root/.cache/ms-playwright /root/.cache/ms-playwright
+
+RUN playwright install-deps chromium
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
 
 # Copy application code
 COPY utils/ ./utils/
@@ -29,9 +35,6 @@ COPY nodes.py .
 COPY flows.py .
 COPY models.py .
 COPY main.py .
-
-# Create directories
-RUN mkdir -p logs data/docs
 
 # Expose port
 EXPOSE 8000

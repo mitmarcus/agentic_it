@@ -19,6 +19,11 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      cache_from:
+        - it-support-chatbot:latest
+      args:
+        BUILDKIT_INLINE_CACHE: 1
+    image: it-support-chatbot:latest
     container_name: it-support-chatbot
     ports:
       - "8000:8000"
@@ -27,6 +32,7 @@ services:
         required: false
     volumes:
       - ./logs:/app/logs
+      - ./data/docs:/app/data/docs:ro # Mount docs as read-only
     restart: unless-stopped
     depends_on:
       - chromadb
