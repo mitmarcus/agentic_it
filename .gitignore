@@ -95,4 +95,4 @@ coverage/
 # User added
 docs/ 
 .venv/
-.github
+.github/
