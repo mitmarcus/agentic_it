@@ -150,8 +150,10 @@ class SearchKnowledgeBaseNode(Node):
             logger.warning("Empty or zero embedding, skipping search")
             return []
         
-        top_k = int(os.getenv("RAG_TOP_K", "3"))
-        min_score = float(os.getenv("RAG_MIN_SCORE", "0.6"))
+        # Improved: Fetch more candidates for better coverage (5 instead of 3)
+        top_k = int(os.getenv("RAG_TOP_K", "5"))
+        # Improved: Slightly higher threshold for better quality (0.65 instead of 0.6)
+        min_score = float(os.getenv("RAG_MIN_SCORE", "0.65"))
         
         # Query collection
         results = query_collection(query_embedding, top_k=top_k)
@@ -176,10 +178,25 @@ class SearchKnowledgeBaseNode(Node):
         if exec_res:
             max_context_tokens = int(os.getenv("RAG_MAX_CONTEXT_TOKENS", "2000"))
             
+            # Improved: Deduplicate by source_file to avoid redundant chunks from same doc
+            seen_sources = set()
+            unique_docs = []
+            for doc in exec_res:
+                source = doc['metadata'].get('source_file', 'unknown')
+                if source not in seen_sources:
+                    seen_sources.add(source)
+                    unique_docs.append(doc)
+            
             context_parts = []
-            for i, doc in enumerate(exec_res):
-                context_parts.append(f"[Document {i+1}] (score: {doc['score']:.2f})")
-                context_parts.append(f"Source: {doc['metadata'].get('source_file', 'unknown')}")
+            for i, doc in enumerate(unique_docs):
+                metadata = doc['metadata']
+                source_file = metadata.get('source_file', 'unknown')
+                chunk_index = metadata.get('chunk_index', '?')
+                total_chunks = metadata.get('total_chunks', '?')
+                
+                # Improved: More context about document structure
+                context_parts.append(f"[Document {i+1}] (Relevance: {doc['score']:.2f})")
+                context_parts.append(f"File: {source_file} (Chunk {chunk_index} of {total_chunks})")
                 context_parts.append(doc['document'])
                 context_parts.append("")
             
@@ -187,6 +204,7 @@ class SearchKnowledgeBaseNode(Node):
             rag_context = truncate_to_token_limit(rag_context, max_context_tokens)
             
             shared["rag_context"] = rag_context
+            logger.info(f"Compiled context from {len(unique_docs)} unique documents ({len(exec_res)} total chunks)")
             return "docs_found"
         else:
             shared["rag_context"] = ""
@@ -214,11 +232,11 @@ class DecisionMakerNode(Node):
         for msg in history[:-1][-20:]:  # Last 10 exchanges, excluding current query
             history_str += f"{msg['role']}: {msg['content']}\n"
         
-        # Get retrieved docs summary
+        # Get full RAG context (not just summaries)
+        rag_context = shared.get("rag_context", "")
         retrieved_docs = shared.get("retrieved_docs", [])
-        doc_summaries = ""
-        for i, doc in enumerate(retrieved_docs[:3]):
-            doc_summaries += f"{i+1}. {doc['document'][:100]}... (score: {doc['score']:.2f})\n"
+        doc_count = len(retrieved_docs)
+        doc_scores = [doc['score'] for doc in retrieved_docs] if retrieved_docs else []
         
         # Get workflow state
         workflow_state = shared.get("workflow_state")
@@ -235,7 +253,9 @@ class DecisionMakerNode(Node):
             "user_os": shared.get("user_os", "unknown"),
             "intent": shared.get("intent", {}),
             "conversation_history": history_str,
-            "doc_summaries": doc_summaries,
+            "rag_context": rag_context,
+            "doc_count": doc_count,
+            "doc_scores": doc_scores,
             "workflow_status": workflow_status,
             "turn_count": shared.get("turn_count", 0),
             "search_count": search_count,
@@ -245,19 +265,28 @@ class DecisionMakerNode(Node):
     def exec(self, context: Dict) -> Dict:
         """Call LLM to decide next action."""
         clarify_threshold = POLICY_LIMITS["clarify_confidence_threshold"]
+        doc_count = context.get('doc_count', 0)
+        avg_score = sum(context.get('doc_scores', [])) / len(context.get('doc_scores', [])) if context.get('doc_scores') else 0
+        
         prompt = f"""### CONTEXT
 User Query: "{context['user_query']}"
 User System: {context.get('user_os', 'unknown')}
 Intent Classification: {context['intent'].get('intent', 'unknown')} (confidence: {context['intent'].get('confidence', 0):.2f})
 Conversation Turn: {context['turn_count']}
 
-Retrieved Documents:
-{context['doc_summaries'] if context['doc_summaries'] else 'No documents retrieved'}
+Retrieved Knowledge Base ({doc_count} documents, avg score: {avg_score:.2f}):
+{context['rag_context'] if context.get('rag_context') else 'No relevant documents found'}
 
 Conversation History (last 3 messages):
 {context['conversation_history'] if context['conversation_history'] else 'No previous conversation'}
 
-Current Workflow State: {context['workflow_status']}
+Current Workflow State: {context['workflow_status']}"""
+        
+        # Debug: Log the prompt to see what decision maker sees
+        logger.info(f"Decision maker prompt (first 500 chars): {prompt[:500]}...")
+        logger.info(f"RAG context length: {len(context.get('rag_context', ''))} chars")
+        
+        prompt += """
 
 ### YOUR ROLE
 You are the decision-making component of an IT support chatbot. Your job is to 
@@ -288,15 +317,17 @@ analyze the context and decide the next action to help the employee efficiently.
     Description: Ask user for more specific details
     When to use: Query is ambiguous or missing critical information
 
-### DECISION RULES
-- IMPORTANT: You have searched {context['search_count']} times (max: {context['max_searches']}). If at max, you MUST choose 'answer' or 'clarify', NOT 'search_kb'
-- If confidence < {clarify_threshold:.2f} in understanding query → clarify
-- If intent = factual + good docs found → answer
-- If intent = troubleshooting + no workflow started → troubleshoot (or answer if we have docs)
-- If in workflow + stuck → search_tickets
-- If same docs keep appearing across searches → answer with what you have
-- Never create ticket without attempting resolution first
-- Keep responses concise and actionable
+### DECISION RULES (READ CAREFULLY)
+1. **IF you have retrieved documents with scores > 0.65, YOU MUST ANSWER** - The knowledge base has relevant information
+2. **DO NOT ask clarifying questions if you have good documents** - Use the retrieved context to answer directly
+3. You have searched {context['search_count']} times (max: {context['max_searches']}). If at max, choose 'answer' or 'clarify', NOT 'search_kb'
+4. Only clarify if: (a) No documents retrieved OR (b) Query is completely incomprehensible OR (c) Documents retrieved but irrelevant (score < 0.65)
+5. Never create ticket without attempting resolution first
+
+### EXAMPLES OF CORRECT BEHAVIOR
+- User asks "who to contact about router?" + You have docs about router contacts (score 0.72) → **answer** with contact info
+- User asks "router" (vague) + No good docs → **clarify** what they need
+- User asks clear question + No docs found → **search_kb** OR **answer** saying you don't have that info
 
 ### OUTPUT FORMAT
 Respond in YAML:
@@ -331,7 +362,7 @@ Think carefully and make the best decision for the user."""
         logger.error(f"Decision making failed: {exc}")
         
         # Smart fallback based on available context
-        has_docs = bool(prep_res.get("doc_summaries"))
+        has_docs = bool(prep_res.get("rag_context")) and prep_res.get("doc_count", 0) > 0
         intent = prep_res.get("intent", {}).get("intent", "unknown")
         confidence = prep_res.get("intent", {}).get("confidence", 0)
         
@@ -874,10 +905,49 @@ class LoadDocumentsNode(Node):
         return shared.get("source_dir", os.getenv("INGESTION_SOURCE_DIR", "./data/docs"))
     
     def exec(self, source_dir: str) -> List[Dict]:
-        """Load all documents from directory."""
-        from utils.document_loader import load_documents_from_directory
+        """Load all documents from directory using document parser."""
+        from pathlib import Path
+        from utils.document_parser import parse_document
         
-        documents = load_documents_from_directory(source_dir)
+        source_path = Path(source_dir)
+        if not source_path.exists():
+            raise FileNotFoundError(f"Source directory not found: {source_path}")
+        
+        # Find all supported files
+        file_extensions = (".txt", ".md", ".html", ".htm", ".pdf")
+        files = [f for f in source_path.rglob("*") if f.is_file() and f.suffix.lower() in file_extensions]
+        
+        logger.info(f"Found {len(files)} files in {source_path}")
+        
+        documents = []
+        for filepath in files:
+            try:
+                relative_path = filepath.relative_to(source_path)
+                
+                # Use document parser for PDF and HTML, plain text for others
+                file_ext = filepath.suffix.lower()
+                if file_ext in [".pdf", ".html", ".htm"]:
+                    result = parse_document(str(filepath))
+                    content = result['text']
+                else:
+                    # Plain text/markdown
+                    with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
+                        content = f.read()
+                
+                documents.append({
+                    "content": content,
+                    "metadata": {
+                        "source_file": str(filepath),
+                        "relative_path": str(relative_path),
+                        "filename": filepath.name,
+                        "extension": filepath.suffix,
+                        "size_bytes": filepath.stat().st_size,
+                    }
+                })
+            except Exception as e:
+                logger.warning(f"Failed to load {filepath}: {e}")
+                continue
+        
         logger.info(f"Loaded {len(documents)} documents from {source_dir}")
         return documents
     
@@ -901,8 +971,9 @@ class ChunkDocumentsNode(BatchNode):
         content = document.get("content", "")
         metadata = document.get("metadata", {})
         
-        chunk_size = int(os.getenv("INGESTION_CHUNK_SIZE", "500"))
-        chunk_overlap = int(os.getenv("INGESTION_CHUNK_OVERLAP", "50"))
+        # Improved: Larger chunks (800 tokens) for better context, more overlap (100 tokens) for continuity
+        chunk_size = int(os.getenv("INGESTION_CHUNK_SIZE", "800"))
+        chunk_overlap = int(os.getenv("INGESTION_CHUNK_OVERLAP", "100"))
 
         chunks = chunk_text(content, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
 
