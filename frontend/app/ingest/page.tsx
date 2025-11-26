@@ -61,16 +61,23 @@ export default function IngestPage() {
   };
 
   const handleDeleteDocument = async (sourceFile: string, filename: string) => {
-    if (!confirm(`Are you sure you want to delete "${filename}"? This will remove all chunks from the knowledge base.`)) {
+    if (
+      !confirm(
+        `Are you sure you want to delete "${filename}"? This will remove all chunks from the knowledge base.`
+      )
+    ) {
       return;
     }
 
     setDeletingDoc(sourceFile);
     try {
       const encodedPath = encodeURIComponent(sourceFile);
-      const response = await fetch(`http://localhost:8000/documents/${encodedPath}`, {
-        method: "DELETE",
-      });
+      const response = await fetch(
+        `http://localhost:8000/documents/${encodedPath}`,
+        {
+          method: "DELETE",
+        }
+      );
 
       if (!response.ok) {
         throw new Error(`Failed to delete document: ${response.statusText}`);
