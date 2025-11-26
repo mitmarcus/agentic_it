@@ -110,6 +110,8 @@ async def scrape_session():
     """
 
     logger.info("Starting status retrieval session.")
+    results = None
+    
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         page = await browser.new_page()
@@ -129,13 +131,15 @@ async def scrape_session():
                     
         except KeyboardInterrupt:
             print("\nExiting...")
+            results = None
         except Exception as e:
             print(f"Error while finding status events. Current network status is unavailable.")
-            return None
+            results = None
         finally:
             print("Status retrieval session ended.")
             await browser.close()
-            return results
+            
+    return results
         
 def format_status_results(results):
     """
