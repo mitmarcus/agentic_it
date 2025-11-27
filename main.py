@@ -76,7 +76,7 @@ async def lifespan(app: FastAPI):
         from utils.chromadb_client import initialize_client, get_collection_stats
         initialize_client()
         stats = get_collection_stats()
-        logger.info(f"ChromaDB connected: {stats['count']} documents indexed")
+        logger.info(f"ChromaDB connected: {stats['count']} chunks indexed")
     except Exception as e:
         logger.warning(f"ChromaDB connection check failed: {e}")
         logger.warning("Indexing may be required. Use POST /index to index documents.")

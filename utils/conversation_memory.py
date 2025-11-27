@@ -152,6 +152,29 @@ class ConversationMemory:
             del self._sessions[session_id]
         
         return len(to_remove)
+    
+    def get_formatted_history(self, session_id: str, limit: int = 10, exclude_last: bool = False) -> str:
+        """
+        Get conversation history formatted as a string.
+        
+        Args:
+            session_id: Session identifier
+            limit: Maximum number of messages to include in the output string
+            exclude_last: Whether to exclude the most recent message (useful if current query is handled separately)
+            
+        Returns:
+            Formatted string "Role: Content\n"
+        """
+        fetch_limit = limit + 1 if exclude_last else limit
+        history = self.get_conversation_history(session_id, fetch_limit)
+        
+        if exclude_last and history:
+            history = history[:-1]
+            
+        formatted = ""
+        for msg in history:
+            formatted += f"{msg['role']}: {msg['content']}\n"
+        return formatted
 
 
 # Global conversation memory instance
