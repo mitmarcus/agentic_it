@@ -272,12 +272,7 @@ class DecisionMakerNode(Node):
         """Gather all context for decision making."""
         # Get conversation history
         session_id = shared.get("session_id", "")
-        history = conversation_memory.get_conversation_history(session_id, limit=10)
-        
-        # Format history - exclude the very last message (current query)
-        history_str = ""
-        for msg in history[:-1][-20:]:  # Last 10 exchanges, excluding current query
-            history_str += f"{msg['role']}: {msg['content']}\n"
+        history_str = conversation_memory.get_formatted_history(session_id, limit=20, exclude_last=True)
         
         # Get full RAG context (not just summaries)
         rag_context = shared.get("rag_context", "")
@@ -313,6 +308,7 @@ class DecisionMakerNode(Node):
     def exec(self, context: Dict) -> Dict:
         """Call LLM to decide next action."""
         clarify_threshold = POLICY_LIMITS["clarify_confidence_threshold"]
+        doc_threshold = POLICY_LIMITS["doc_confidence_threshold"]
         doc_count = context.get('doc_count', 0)
         avg_score = sum(context.get('doc_scores', [])) / len(context.get('doc_scores', [])) if context.get('doc_scores') else 0
         
@@ -328,9 +324,6 @@ Retrieved Knowledge Base ({doc_count} documents, avg score: {avg_score:.2f}):
 Network Status:
 {context['network_status']}
 
-Retrieved Documents from knowledge base:
-{context['doc_summaries'] if context['doc_summaries'] else 'No documents retrieved'}
-
 Conversation History (look at the last 3 messages):
 {context['conversation_history'] if context['conversation_history'] else 'No previous conversation'}
 
@@ -343,8 +336,12 @@ Current Workflow State: {context['workflow_status']}"""
         prompt += """
 
 ### YOUR ROLE
-You are the decision-making component of an IT support chatbot. Your job is to 
-analyze the context and decide the next action to help the employee efficiently.
+You are the decision-making component of an IT support chatbot for Stibo Systems. Your job is to 
+analyze the context and decide the next action to help the employee in our office environment efficiently.
+
+### ASSUMPTIONS
+- Assume the user is an employee working in the Stibo Systems office unless they explicitly state otherwise (e.g., "I am at home", "remote", "public wifi").
+- Prioritize office-related solutions first.
 
 ## REASONING PROCESS
 1. Problem Summary: What is the user's core issue in 1-2 sentences?
@@ -354,11 +351,15 @@ analyze the context and decide the next action to help the employee efficiently.
 5. Final Decision: Select the best action. Justify why it's superior to the alternatives now.
 
 ### DECISION RULES (READ CAREFULLY)
-1. **IF you have retrieved documents with scores > 0.65, YOU MUST ANSWER** - The knowledge base has relevant information
-2. **DO NOT ask clarifying questions if you have good documents** - Use the retrieved context to answer directly
-3. You have searched {context['search_count']} times (max: {context['max_searches']}). If at max, choose 'answer' or 'clarify', NOT 'search_kb'
-4. Only clarify if: (a) No documents retrieved OR (b) Query is completely incomprehensible OR (c) Documents retrieved but irrelevant (score < 0.65)
-5. Never create ticket without attempting resolution first
+1. **IF you have retrieved documents with scores > {doc_threshold}, YOU MUST ANSWER** - The knowledge base likely has relevant information.
+2. **LOOK DEEPER**: Check the document text for specific names, phone numbers, or steps even if the relevance score is moderate.
+3. **CONTACT INFO & ROLES**: If the user asks "who to contact" or "what does [Name] do", and the documents contain names linked to roles or topics, YOU MUST ANSWER. Look for "Contact [Name] for [Topic]" or "[Name] is responsible for [Topic]".
+4. **PHRASE MATCH**: If the user mentions a specific phrase (e.g. "lights are green") and a document contains that phrase, YOU MUST ANSWER based on that document.
+5. **DO NOT ask clarifying questions if you have good documents** - Use the retrieved context to answer directly.
+6. You have searched {context['search_count']} times (max: {context['max_searches']}). If at max, choose 'answer' or 'clarify', NOT 'search_kb'.
+7. **PRIORITIZE SEARCH**: If you haven't searched yet and the query contains specific keywords (e.g., "router", "wifi", "who to ask"), choose 'search_kb' instead of 'clarify'.
+8. Only clarify if: (a) You have already searched and found nothing OR (b) Query is completely incomprehensible (e.g. "help", "it doesn't work") OR (c) Documents retrieved but irrelevant (score < {doc_threshold}).
+9. Never create ticket without attempting resolution first.
 
 ### EXAMPLES OF CORRECT BEHAVIOR
 - User asks "who to contact about router?" + You have docs about router contacts (score 0.72) → **answer** with contact info
@@ -398,6 +399,7 @@ analyze the context and decide the next action to help the employee efficiently.
 5.  create_ticket
     Description: Escalate to human support agent with all gathered context
     When to use:
+    - User explicitly asks to talk to a human, agent, or create a ticket
     - All self-service options have been exhausted
     - Issue requires administrative privileges or physical access
     - Problem is complex and spans multiple systems
@@ -413,13 +415,14 @@ analyze the context and decide the next action to help the employee efficiently.
 ### DECISION RULES & GUARDRAILS
 - If any active network issues match user's issue → answer
 - IMPORTANT: You have searched {context['search_count']} times (max: {context['max_searches']}). If at max, you MUST choose 'answer' (with best available info), 'clarify' or 'create_ticket', NOT 'search_kb'
-- If intent confidence < {clarify_threshold:.2f} OR query contains ambiguous terms (e.g., "it", "that", "the problem") OR critical info is missing → clarify
+- If intent confidence < {clarify_threshold:.2f} AND query lacks technical terms → clarify. If query has technical terms (e.g. "router", "vpn", "wifi"), prefer 'search_kb'.
 - If intent is factual AND retrieved document provides a clear, direct solution → answer
 - If user message contains explicit error codes, logs, or attachments → troubleshoot (unless 'search_kb' finds an exact-match).
 - If intent = troubleshooting + no workflow started → troubleshoot (or answer if we have the document)
+- If user explicitly requests 'talk to human', 'create ticket', or 'escalate', choose 'create_ticket'.
 - Use 'create_ticket' after other resolution paths ('search_kb', troubleshoot) are exhausted or if the issue requires privileges/physical access.
 - If the same document keep appearing in searches, do not search again. 'answer' with the best information you have.
-- Never create ticket without attempting resolution first
+- Attempt resolution first unless user demands escalation.
 - Keep responses concise and actionable
 
 ### OUTPUT FORMAT
@@ -510,12 +513,7 @@ class GenerateAnswerNode(Node):
     def prep(self, shared: Dict) -> Dict:
         """Read query, context, and history."""
         session_id = shared.get("session_id", "")
-        history = conversation_memory.get_conversation_history(session_id, limit=10)
-        
-        # Format last 2 exchanges (4 messages), excluding current query
-        history_str = ""
-        for msg in history[:-1][-4:]:
-            history_str += f"{msg['role']}: {msg['content']}\n"
+        history_str = conversation_memory.get_formatted_history(session_id, limit=8, exclude_last=True)
         
         return {
             "user_query": shared.get("user_query", ""),
@@ -529,37 +527,38 @@ class GenerateAnswerNode(Node):
         """Generate answer using LLM."""
         user_os = context.get('user_os', 'unknown')
         
-        prompt = f"""### YOUR ROLE
-You are a helpful IT support assistant. Provide accurate, concise answers based on official documentation.
+        prompt = f"""You are a helpful IT support assistant for Stibo Systems.
 
-### USER INFORMATION
-Operating System: {user_os}
+    USER INFO
+    - OS: {user_os}
 
-### COMPANY NETWORK STATUS
-{context['network_status'] if context['network_status'] else 'No company network status information available.'}
+    COMPANY NETWORK STATUS
+    {context['network_status'] if context['network_status'] else 'No company network status information available.'}
 
-### CONTEXT FROM KNOWLEDGE BASE
-{context['rag_context'] if context['rag_context'] else 'No relevant documents found in knowledge base.'}
+    KNOWLEDGE BASE CONTEXT
+    {context['rag_context'] if context['rag_context'] else 'No relevant documents found in knowledge base.'}
 
-Conversation History:
-{context['conversation_history'] if context['conversation_history'] else 'No previous conversation.'}
+    Conversation History:
+    {context['conversation_history'] if context['conversation_history'] else 'No previous conversation.'}
 
-### YOUR ROLE
-You are the Answer Generator component of an IT support AI agent. Your specific function is to provide direct answers and solutions using the available information, ONLY when the decision engine has chosen the 'answer' action.
+    INSTRUCTIONS (condensed)
+    - Answer using ONLY the provided context.
+    - Be concise (3–5 sentences). Use bullet points for procedures.
+    - Tailor instructions to the user's OS ({user_os}); avoid mentioning OS unless necessary.
+    - If docs match network issues, mention known service issues.
+    - If context is insufficient, say so and offer to create a ticket.
+    - Never include sensitive info (passwords, keys, PII).
+    - Format contact info as: **Name** - **Role/Topic** - **Contact Details**.
 
-### INSTRUCTIONS
-1. Answer using ONLY information from the context above
-2. Be concise but complete - aim for 3-5 sentences
-3. Use bullet points for step-by-step instructions
-4. **IMPORTANT: Tailor all instructions to the user's operating system ({user_os})**
-   - For Windows: Use Windows-specific paths, commands, and UI elements
+    OUTPUT (YAML)
    - For macOS: Use Mac-specific paths, commands, and UI elements
    - For Linux: Use Linux-specific commands and paths
-5. If the user asks about their OS, tell them: "You are using {user_os}"
+5. Do NOT mention the user's operating system unless it is critical for the specific instruction or the user asks.
 6. If the user's problem matches issues under company network status, say that there are known issues related to the affected service
 7. If context insufficient, say so and offer to create a ticket
 8. NEVER include sensitive information (passwords, keys, personal data)
 9. Be friendly and professional
+10. **CONTACT INFO**: When providing contact information, format it clearly: **Name** - **Role/Topic** - **Contact Details**.
 
 ### AVAILABLE ANSWER FORMATS
 1.  factual_response
@@ -587,7 +586,12 @@ You are the Answer Generator component of an IT support AI agent. Your specific 
 Respond in YAML:
 ```yaml
 action: <factual_response | step_by_step_instructions | reference_summary>
-confidence: <0.0 to 1.0 in your diagnosis>
+confidence: <0.0 to 1.0>
+# Confidence scoring guide:
+# 1.0 = Direct answer found in "Retrieved Knowledge Documents" (e.g. exact steps, specific facts)
+# 0.8-0.9 = Answer inferred from documents or general knowledge with high certainty
+# 0.5-0.7 = Partial answer or general advice without specific documentation
+# < 0.5 = Guessing or unable to answer
 response_to_user: |
     <if factual_response: provide 1-2 sentences that would express the anwser to user's request>
     <if step_by_step_instructions: provide a bulletpoint step-by-step list from the document>
@@ -626,7 +630,7 @@ Provide the most direct and helpful answer possible using only the verified info
         return ("I'm having trouble generating a response right now. "
                 "Please contact IT support for direct assistance with your query.")
     
-    def post(self, shared: Dict, prep_res: Dict, exec_res: str) -> str:
+    def post(self, shared: Dict, prep_res: Dict, exec_res: Dict) -> str:
         """Write answer to response."""
         if "response" not in shared:
             shared["response"] = {}
@@ -634,6 +638,10 @@ Provide the most direct and helpful answer possible using only the verified info
         shared["response"]["text"] = exec_res.get("response_to_user", str(exec_res))
         shared["response"]["action_taken"] = "answer"
         shared["response"]["requires_followup"] = False
+        
+        # Add confidence to response metadata if available
+        if "confidence" in exec_res:
+            shared["response"]["confidence"] = exec_res["confidence"]
         
         return "default"
 
@@ -651,12 +659,7 @@ class AskClarifyingQuestionNode(Node):
     def prep(self, shared: Dict) -> Dict:
         """Read query, intent, and conversation history."""
         session_id = shared.get("session_id", "")
-        history = conversation_memory.get_conversation_history(session_id, limit=10)
-        
-        # Format last 2 exchanges, excluding current query
-        history_str = ""
-        for msg in history[:-1][-4:]:
-            history_str += f"{msg['role']}: {msg['content']}\n"
+        history_str = conversation_memory.get_formatted_history(session_id, limit=8, exclude_last=True)
         
         return {
             "user_query": shared.get("user_query", ""),
@@ -677,7 +680,11 @@ Conversation History:
 {context['conversation_history'] if context['conversation_history'] else 'No previous conversation'}
 
 ### YOUR ROLE
-You are the Clarification Specialist component of an IT support AI agent. Your job is to generate precise, non-redundant clarifying questions that efficiently gather missing information.
+You are the Clarification Specialist component of an IT support AI agent for Stibo Systems. Your job is to generate precise, non-redundant clarifying questions that efficiently gather missing information relevant to our office environment.
+
+### ASSUMPTIONS
+- Assume the user is an employee working in the Stibo Systems office unless they explicitly state otherwise.
+- Do NOT ask "where are you?" or "are you in the office?".
 
 ## REASONING PROCESS
 1.  Identify the Gap: Determine what specific information is missing based on the decision engine's analysis and conversation context.
@@ -749,12 +756,17 @@ Generate the most efficient clarifying question that will provide the missing in
             return "I'm experiencing high load right now. Could you please provide more details about your issue so I can help you better?"
         return "Could you please provide more details about your issue?"
     
-    def post(self, shared: Dict, prep_res: Dict, exec_res: str) -> str:
+    def post(self, shared: Dict, prep_res: Dict, exec_res: Any) -> str:
         """Write clarifying question to response."""
         if "response" not in shared:
             shared["response"] = {}
         
-        shared["response"]["text"] = exec_res.get("response_to_user", str(exec_res))
+        if isinstance(exec_res, dict):
+            response_text = exec_res.get("response_to_user", str(exec_res))
+        else:
+            response_text = str(exec_res)
+
+        shared["response"]["text"] = response_text
         shared["response"]["action_taken"] = "clarify"
         shared["response"]["requires_followup"] = True
         
@@ -809,15 +821,10 @@ class InteractiveTroubleshootNode(Node):
     def prep(self, shared: Dict) -> Dict:
         """Gather context for troubleshooting."""
         session_id = shared.get("session_id", "")
-        history = conversation_memory.get_conversation_history(session_id, limit=10)
+        history_str = conversation_memory.get_formatted_history(session_id, limit=20, exclude_last=True)
         
         # Get current troubleshooting state
         ts_state = shared.get("troubleshoot_state", {})
-        
-        # Format conversation history
-        history_str = ""
-        for msg in history[:-1][-20:]:  # Last 10 exchanges, excluding current query
-            history_str += f"{msg['role']}: {msg['content']}\n"
         
         # Get retrieved docs summary
         retrieved_docs = shared.get("retrieved_docs", [])
@@ -863,11 +870,15 @@ Failed Attempts:
 {chr(10).join(f"- {step}" for step in context['failed_steps'][-3:]) if context['failed_steps'] else 'None'}
 
 ### YOUR ROLE
-You are an intelligent troubleshooting assistant. Your job is to:
+You are an intelligent troubleshooting assistant for Stibo Systems. Your job is to:
 1. **Detect user intent changes** - recognize if user wants to exit troubleshooting, ask something else, or continue
 2. **Provide diagnostic reasoning** - think like a systems engineer, not a script reader
 3. **Adapt dynamically** - learn from failed steps and adjust your approach
 4. **Know when to escalate** - recognize unsolvable issues and recommend human intervention
+
+### ASSUMPTIONS
+- Assume the user is in the Stibo Systems office environment.
+- Prioritize office network troubleshooting steps (e.g., "Check if you are connected to 'Stibo-Corp' wifi") over home networking steps.
 
 ### AVAILABLE ACTIONS
 [1] continue_troubleshoot
@@ -886,6 +897,7 @@ You are an intelligent troubleshooting assistant. Your job is to:
 - CRITICAL: Detect exit signals like "never mind", "forget it", "I'll try later", "actually I need...", "can you help with..."
 - If user changes topic or asks new question → exit_troubleshoot
 - If user reports success ("it works", "that fixed it", "problem solved") → exit_troubleshoot
+- If user explicitly asks to 'talk to human' or 'create ticket' → escalate
 - If {escalate_failed_steps}+ failed steps or same error persists → escalate
 - If user shows frustration ("this isn't working", "nothing helps") → escalate
 - If user is engaged and cooperative → continue_troubleshoot
@@ -1260,12 +1272,12 @@ class StatusQueryNode(AsyncNode):
         """No preparation needed for status query."""
         return None
     
-    async def exec_async(self, prep_res: None) -> Dict:
+    async def exec_async(self, prep_res: None) -> List[Dict]:
         """Query the status page."""
         from utils.status_retrieval import scrape_session
         
         results = await scrape_session()
-        return results
+        return results if results is not None else []
     
     async def post_async(self, shared: Dict, prep_res: None, exec_res: Dict) -> str:
         """Write status results to shared store."""
