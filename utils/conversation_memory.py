@@ -2,6 +2,7 @@
 Session-based conversation memory for interactive workflows.
 Stores workflow state, conversation history, and step tracking.
 """
+import threading
 from typing import Dict, Any, List, Optional
 from datetime import datetime
 
@@ -14,6 +15,7 @@ class ConversationMemory:
     
     def __init__(self):
         self._sessions: Dict[str, Dict[str, Any]] = {}
+        self._lock = threading.Lock()
     
     def get_session(self, session_id: str) -> Dict[str, Any]:
         """
@@ -25,19 +27,20 @@ class ConversationMemory:
         Returns:
             Session data dictionary
         """
-        if session_id not in self._sessions:
-            self._sessions[session_id] = {
-                "session_id": session_id,
-                "created_at": datetime.now().isoformat(),
-                "last_activity": datetime.now().isoformat(),
-                "conversation_history": [],
-                "workflow_state": None,
-            }
-        
-        # Update last activity
-        self._sessions[session_id]["last_activity"] = datetime.now().isoformat()
-        
-        return self._sessions[session_id]
+        with self._lock:
+            if session_id not in self._sessions:
+                self._sessions[session_id] = {
+                    "session_id": session_id,
+                    "created_at": datetime.now().isoformat(),
+                    "last_activity": datetime.now().isoformat(),
+                    "conversation_history": [],
+                    "workflow_state": None,
+                }
+            
+            # Update last activity
+            self._sessions[session_id]["last_activity"] = datetime.now().isoformat()
+            
+            return self._sessions[session_id]
     
     def add_message(self, session_id: str, role: str, content: str):
         """
