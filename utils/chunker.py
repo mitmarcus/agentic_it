@@ -15,7 +15,6 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Logging
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Load spaCy lazily (avoid heavy import-time cost in some contexts).
