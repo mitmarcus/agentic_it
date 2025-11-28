@@ -8,6 +8,20 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# Cached client instance
+_CLIENT = None
+
+
+def _get_client() -> Groq:
+    """Get or create cached Groq client."""
+    global _CLIENT
+    if _CLIENT is None:
+        api_key = os.getenv("GROQ_API_KEY")
+        if not api_key:
+            raise ValueError("GROQ_API_KEY environment variable not set")
+        _CLIENT = Groq(api_key=api_key)
+    return _CLIENT
+
 
 def call_llm(prompt: str, max_tokens: int = 1024) -> str:
     """
@@ -25,15 +39,11 @@ def call_llm(prompt: str, max_tokens: int = 1024) -> str:
         RateLimitError: If rate limit exceeded (for Node retry handling)
         Exception: If API call fails (propagates to Node for retry handling)
     """
-    api_key = os.getenv("GROQ_API_KEY")
-    if not api_key:
-        raise ValueError("GROQ_API_KEY environment variable not set")
-    
     model = os.getenv("GROQ_MODEL", "")
     if not model:
         raise ValueError("GROQ_MODEL environment variable not set")
 
-    client = Groq(api_key=api_key)
+    client = _get_client()
     
     try:
         response = client.chat.completions.create(
