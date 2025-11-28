@@ -78,15 +78,11 @@ class QueryFlow(Flow):
         _ = decision_node - "troubleshoot" >> troubleshoot_node
         _ = decision_node - "search_tickets" >> search_tickets_node
         _ = decision_node - "create_ticket" >> create_ticket_node
-        
-        # Troubleshoot transitions
-        _ = troubleshoot_node - "continue" >> troubleshoot_node
-        _ = troubleshoot_node - "exit" >> format_node
-        _ = troubleshoot_node - "escalate" >> create_ticket_node
 
         # All paths lead to format response
         _ = answer_node >> format_node
         _ = clarify_node >> format_node
+        _ = troubleshoot_node >> format_node
         _ = search_tickets_node >> format_node
         _ = create_ticket_node >> format_node
         
