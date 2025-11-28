@@ -82,9 +82,14 @@ class QueryFlow(Flow):
         # All paths lead to format response
         _ = answer_node >> format_node
         _ = clarify_node >> format_node
-        _ = troubleshoot_node >> format_node
         _ = search_tickets_node >> format_node
         _ = create_ticket_node >> format_node
+
+        # Troubleshoot can exit, escalate, or continue (default)
+        _ = troubleshoot_node >> format_node  # default: continue
+        _ = troubleshoot_node - "exit" >> format_node
+        _ = troubleshoot_node - "escalate" >> create_ticket_node
+      
         
         # Initialize Flow with start node (redact first!)
         super().__init__(start=redact_node)
@@ -182,12 +187,12 @@ def create_network_status_flow() -> Flow:
 
 
 # ============================================================================
-# Simplified Query Flow (for testing/development)
+# Test Query Flow (for testing/development)
 # ============================================================================
 
-@trace_flow(config=tracing_config, flow_name="ITSupportSimpleQueryFlow")
-class SimpleQueryFlow(Flow):
-    """Simplified query flow for testing with tracing."""
+@trace_flow(config=tracing_config, flow_name="ITSupportTestQueryFlow")
+class TestQueryFlow(Flow):
+    """Test query flow for development - no agent routing, straight RAG pipeline."""
     def __init__(self):
         # Create nodes
         redact_node = RedactInputNode()
@@ -210,18 +215,18 @@ class SimpleQueryFlow(Flow):
         # Initialize Flow with start node
         super().__init__(start=redact_node)
         
-        logger.info("Simple query flow created with tracing")
+        logger.info("Test query flow created with tracing")
 
 
-def create_simple_query_flow() -> Flow:
+def create_test_query_flow() -> Flow:
     """
-    Useful for testing RAG pipeline without agent routing.
+    Test flow for RAG pipeline without agent routing.
     Goes straight from search to answer.
     
     Returns:
         Configured Flow instance with tracing
     """
-    return SimpleQueryFlow()
+    return TestQueryFlow()
 
 
 # ============================================================================
@@ -245,7 +250,7 @@ def get_flow(flow_type: str = "query") -> Flow:
         "status": create_network_status_flow,
         "query": create_query_flow,
         "indexing": create_indexing_flow,
-        "simple": create_simple_query_flow
+        "test": create_test_query_flow
     }
     
     if flow_type not in flows:
@@ -268,8 +273,8 @@ if __name__ == "__main__":
         indexing_flow = create_indexing_flow()
         print(f"✓ Indexing flow created: {indexing_flow}")
         
-        simple_flow = create_simple_query_flow()
-        print(f"✓ Simple query flow created: {simple_flow}")
+        test_flow = create_test_query_flow()
+        print(f"✓ Test query flow created: {test_flow}")
         
         print("\n✓ All flows created successfully")
         
