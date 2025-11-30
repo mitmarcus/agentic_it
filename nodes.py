@@ -6,7 +6,9 @@ All nodes follow the pattern:
 - exec(): Process logic (with retries handled by Node)
 - post(): Write to shared store, return action
 """
+import json
 import os
+import re
 import yaml
 import logging
 from typing import Any, Dict, List
@@ -21,6 +23,7 @@ from utils.chromadb_client import query_collection
 from utils.chunker import truncate_to_token_limit
 from utils.redactor import redact_text, redact_dict
 from utils.status_retrieval import format_status_results
+from utils.ticket_manager import find_existing_ticket, write_ticket_file
 
 # Configure logging
 logging.basicConfig(
@@ -1285,4 +1288,231 @@ class StatusQueryNode(AsyncNode):
     async def post_async(self, shared: Dict, prep_res: None, exec_res: Dict) -> str:
         """Write status results to shared store."""
         shared["status_results"] = exec_res
+        return "default"
+    
+# ============================================================================
+# Ticket Creation Node
+# ============================================================================
+
+class TicketCreationNode(Node):
+    """Create a ticket."""
+    def __init__(self):
+        super().__init__(max_retries=3, wait=2)
+
+    def prep(self, shared: Dict) -> Dict:
+        """Gather context for ticket creation."""
+        session_id = shared.get("session_id", "")
+        history = conversation_memory.get_conversation_history(session_id, limit=50)
+
+        # if a ticket already exists, return it to avoid duplicate creation
+        existing = find_existing_ticket(shared, history)
+        
+        # get current troubleshooting state
+        ts_state = shared.get("troubleshoot_state", {})
+
+        history_str = ""
+        for msg in history[:-1][-20:]:
+            history_str += f"{msg['role']}: {msg['content']}\n"
+
+        # get retrieved docs summary
+        retrieved_docs = shared.get("retrieved_docs", [])
+        doc_summaries = ""
+        for i, doc in enumerate(retrieved_docs[:3]):
+            source = doc.get('metadata', {}).get('source_file', 'unknown')
+            doc_summaries += f"{i+1}. [{source}] {doc.get('document', '')[:150]}...\n"
+
+        return {
+            "existing_ticket": existing,  # Will be None or a real ticket dict
+            "user_query": shared.get("user_query", ""),
+            "user_os": shared.get("user_os", "unknown"),
+            "user_browser": shared.get("user_browser", "unknown"),
+            "intent": shared.get("intent", {}),
+            "doc_summaries": doc_summaries,
+            "conversation_history": history_str,
+            "steps_completed": ts_state.get("steps_completed", []),
+            "failed_steps": ts_state.get("failed_steps", []),
+            "issue_type": ts_state.get("issue_type", "")
+        }
+
+    def exec(self, context: Dict) -> Dict:
+        """Analyze user intent and generate a ticket."""
+        try:
+            if context.get("existing_ticket"):
+                existing = context["existing_ticket"]
+                logger.info("Existing ticket found.")
+                return {
+                    "ticket": existing,
+                    "is_existing": True
+                }
+
+            prompt = f"""### CONTEXT
+    User Query: "{context['user_query']}"
+    User System: {context.get('user_os', 'unknown')} / {context.get('user_browser', 'unknown')}
+    Retrieved Documentation:
+    {context['doc_summaries'] if context['doc_summaries'] else 'No relevant documentation retrieved'}
+
+    Conversation History:
+    {context['conversation_history'] if context['conversation_history'] else 'No previous conversation'}
+
+    Previous Steps Taken:
+    {chr(10).join(f"- {step}" for step in context['steps_completed'][-3:]) if context['steps_completed'] else 'None - this is the initial step'}
+
+    Failed Attempts:
+    {chr(10).join(f"- {step}" for step in context['failed_steps'][-3:]) if context['failed_steps'] else 'None'}
+
+    ### YOUR ROLE
+    You are an intelligent tech support assistant. Your job is to create a detailed support ticket for the user's issue, the troubleshooting steps taken so far in the provided conversation, and relevant context.
+
+    ### TICKET FIELDS
+    - Issue Type: The type of issue the user is experiencing, such as "Software Bug", "Network Issue", "Access Problem", etc
+    - Summary: A short title summarizing the issue
+    - Description: A detailed description of the issue, including relevant context and troubleshooting steps taken
+
+
+    ### OUTPUT FORMAT
+    Respond ONLY with a valid JSON ticket object. IMPORTANT: All field values must be on a single line with no literal newlines. Use \\n for line breaks within strings.
+
+    ```json
+    {{
+        "project": "AI Service Desk",
+        "issue_type": "<keywords for issue>",
+        "request_type": "IT Help - Detailed",
+        "summary": "<short title summarizing the issue>",
+        "description": "<detailed description including context and troubleshooting steps taken>",
+        "priority": "L3-Medium",
+        "assignee": "Automatic",
+        "status": "Waiting for support"
+    }}
+    ```
+
+    ### DESCRIPTION GUIDELINES
+    - Use numbered, comma-separated lists for multi-step troubleshooting processes (ex. 1. step one, 2. step two, etc.)
+    - Include all relevant context from conversation
+    - If using docs, cite them briefly: "According to [VPN Setup Guide]..."
+    """
+
+            logger.info("Calling LLM for ticket creation...")
+            llm_response = call_llm(prompt, max_tokens=768)
+            
+            # Handle both dict and string responses from call_llm
+            if isinstance(llm_response, dict):
+                response_text = llm_response.get('content', '') or llm_response.get('text', '') or str(llm_response)
+                logger.info(f"LLM returned dict, extracted text: {response_text[:200]}...")
+            else:
+                response_text = str(llm_response)
+                logger.info(f"LLM response received: {response_text[:200]}...")
+            
+            # Parse the ticket JSON from the response
+            ticket = None
+            
+            try:
+                # Try to find JSON in response
+                m = re.search(r'```json\s*(\{[\s\S]*?\})\s*```', response_text)
+                if m:
+                    json_str = m.group(1)
+                else:
+                    # Fallback: try to find any JSON object
+                    m = re.search(r'(\{[\s\S]*\})', response_text)
+                    if m:
+                        logger.info("Found JSON in response (no code block)")
+                        json_str = m.group(1)
+                    else:
+                        json_str = None
+                
+                if json_str:
+                    # Clean the JSON string to handle control characters
+                    ticket = json.loads(json_str)
+                            
+            except json.JSONDecodeError as e:
+                logger.error(f"Failed to parse ticket JSON: {e}")
+                logger.error(f"Attempted to parse: {m.group(1) if m else 'No match found'}")
+                raise ValueError(f"Failed to parse ticket from LLM response: {e}")
+            
+            if not ticket:
+                logger.error("No ticket JSON found in LLM response")
+                logger.error(f"Full response: {response_text}")
+                raise ValueError("No ticket JSON found in LLM response")
+            
+            logger.info(f"Ticket created successfully: {ticket.get('summary', 'N/A')}")
+            write_ticket_file(ticket, filename=ticket.get("summary", "ticket").replace(" ", "_") + ".json")
+            
+            return {
+                "ticket": ticket,
+                "is_existing": False
+            }
+        except Exception as e:
+            logger.error(f"Exception in exec: {type(e).__name__}: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            raise  # Re-raise to trigger exec_fallback
+
+    def exec_fallback(self, prep_res: Dict, exc: Exception) -> Dict:
+        """Fallback: provide intelligent response based on context when LLM fails."""
+        logger.error(f"Ticket creation failed, using fallback: {exc}")
+
+        ticket = {
+            "project": "AI Service Desk",
+            "issue_type": "IT Help",
+            "request_type": "IT Help - Detailed",
+            "summary": f"Support needed: {prep_res['user_query'][:50]}",
+            "description": f"User query: {prep_res['user_query']}\nSystem error occurred during ticket creation.",
+            "priority": "L3-Medium",
+            "assignee": "Automatic",
+            "status": "Waiting for support",
+        }
+
+        logger.info(f"Fallback ticket created: {ticket['summary']}")
+        write_ticket_file(ticket)
+        
+        return {
+            "ticket": ticket,
+            "is_existing": False
+        }
+
+    def post(self, shared: Dict, prep_res: Dict, exec_res: Dict) -> str:
+        """Store ticket and update shared state."""
+        if not exec_res or not isinstance(exec_res, dict):
+            logger.error(f"Invalid exec_res in post: {exec_res}")
+            if "response" not in shared:
+                shared["response"] = {}
+            shared["response"]["text"] = "I encountered an error creating your ticket. Please try again."
+            return "default"
+        
+        # Store the ticket
+        if "ticket" in exec_res:
+            shared["ticket"] = exec_res["ticket"]
+            logger.info(f"Ticket stored in shared: {exec_res['ticket'].get('summary', 'N/A')}")
+        else:
+            logger.error("No ticket found in exec_res")
+            # Still set a response even without ticket
+            if "response" not in shared:
+                shared["response"] = {}
+            shared["response"]["text"] = "I encountered an error creating your ticket. Please try again."
+            return "default"
+        
+        # Set up minimal response info - FormatFinalResponseNode will handle the message
+        if "response" not in shared:
+            shared["response"] = {}
+        
+        # Only set text if not already set (e.g., by troubleshoot node)
+        if "text" not in shared["response"]:
+            if exec_res.get("is_existing"):
+                shared["response"]["text"] = "I found that a ticket was already created for this issue."
+            else:
+                ticket = exec_res.get("ticket", {})
+                shared["response"]["text"] = (
+                    f"I've created a support ticket for your issue.\n\n"
+                    f"{ticket}\n\n"
+                    f"Our support team will review this and get back to you shortly."
+                )
+            logger.info(f"Response text set: {shared['response']['text'][:100]}...")
+        else:
+            logger.info(f"Response text already set: {shared['response']['text'][:100]}...")
+        
+        shared["response"]["action_taken"] = "ticket_exists" if exec_res.get("is_existing") else "create_ticket"
+        shared["response"]["requires_followup"] = not exec_res.get("is_existing")
+        
+        logger.info(f"shared keys after: {shared.keys()}")
+        logger.info(f"shared['response']: {shared.get('response', {})}")
+        logger.info("Post completed successfully, returning 'default'")
         return "default"
