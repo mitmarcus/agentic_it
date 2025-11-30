@@ -25,6 +25,7 @@ from nodes import (
     ChunkDocumentsNode,
     EmbedDocumentsNode,
     StoreInChromaDBNode,
+    TicketCreationNode,
 )
 
 logger = logging.getLogger(__name__)
@@ -55,13 +56,13 @@ class QueryFlow(Flow):
         answer_node = GenerateAnswerNode()
         clarify_node = AskClarifyingQuestionNode()
         format_node = FormatFinalResponseNode()
+        create_ticket_node = TicketCreationNode()
         
         # Interactive troubleshooting node
         troubleshoot_node = InteractiveTroubleshootNode()
         
         # Placeholder nodes for not-yet-implemented features
         search_tickets_node = NotImplementedNode("Ticket search")
-        create_ticket_node = NotImplementedNode("Ticket creation")
         
         # Connect nodes
         # Linear path: redact -> intent -> embed -> search
