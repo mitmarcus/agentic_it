@@ -4,6 +4,7 @@ Configuration module for tracing with Langfuse.
 
 import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 from dotenv import load_dotenv
 
@@ -36,7 +37,7 @@ class TracingConfig:
         Create TracingConfig from environment variables.
         
         Args:
-            env_file: Optional path to .env file. If None, looks for .env in current directory.
+            env_file: Optional path to .env file. If None, looks for .env in project root.
             
         Returns:
             TracingConfig instance with values from environment variables.
@@ -45,8 +46,10 @@ class TracingConfig:
         if env_file:
             load_dotenv(env_file)
         else:
-            # Try to find .env file in current directory or parent directories
-            load_dotenv()
+            # Find .env relative to this file's location (project root)
+            project_root = Path(__file__).parent.parent
+            env_path = project_root / ".env"
+            load_dotenv(env_path)
         
         return cls(
             langfuse_secret_key=os.getenv("LANGFUSE_SECRET_KEY"),
