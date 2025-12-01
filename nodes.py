@@ -8,7 +8,6 @@ All nodes follow the pattern:
 """
 import os
 import yaml
-import logging
 from typing import Any, Dict, List
 from cremedelacreme import AsyncNode, Node, BatchNode
 
@@ -21,13 +20,20 @@ from utils.chromadb_client import query_collection
 from utils.chunker import truncate_to_token_limit
 from utils.redactor import redact_text, redact_dict
 from utils.status_retrieval import format_status_results
-
-# Configure logging
-logging.basicConfig(
-    level=os.getenv("LOG_LEVEL", "INFO"),
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+from utils.reranker import rerank_results
+from utils.hybrid_search import hybrid_search, rebuild_bm25_from_chromadb
+from utils.feedback import apply_feedback_adjustments
+from utils.mmr import mmr_rerank
+from utils.query_expansion import expand_query, generate_hypothetical_answer
+from utils.metadata_filter import (
+    detect_category_from_query,
+    extract_metadata_hints,
+    build_metadata_filter,
+    apply_filters_to_results
 )
-logger = logging.getLogger(__name__)
+from utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 def _get_float_env(name: str) -> float:
@@ -52,6 +58,7 @@ def _get_int_env(name: str) -> int:
         raise ValueError(f"Environment variable {name}={raw_value} is not a valid integer")
 
 
+# Cache policy limits at module load
 POLICY_LIMITS = {
     "clarify_confidence_threshold": _get_float_env("AGENT_CLARIFY_CONFIDENCE_THRESHOLD"),
     "doc_confidence_threshold": _get_float_env("AGENT_DOC_CONFIDENCE_THRESHOLD"),
@@ -59,6 +66,28 @@ POLICY_LIMITS = {
     "system_error_confidence": _get_float_env("AGENT_SYSTEM_ERROR_CONFIDENCE"),
     "troubleshoot_escalate_failed_steps": _get_int_env("TROUBLESHOOT_ESCALATE_FAILED_STEPS"),
     "troubleshoot_fallback_failed_steps": _get_int_env("TROUBLESHOOT_FALLBACK_FAILED_STEPS"),
+    "max_turns": _get_int_env("AGENT_MAX_TURNS"),
+}
+
+# Cache RAG configuration
+_RAG_CONFIG = {
+    "top_k": _get_int_env("RAG_TOP_K"),
+    "min_score": _get_float_env("RAG_MIN_SCORE"),
+    "max_context_tokens": int(os.getenv("RAG_MAX_CONTEXT_TOKENS", "2000")),
+    "embedding_dim": int(os.getenv("EMBEDDING_DIM", "384")),
+    "chunk_size": _get_int_env("INGESTION_CHUNK_SIZE"),
+    "chunk_overlap": _get_int_env("INGESTION_CHUNK_OVERLAP"),
+    "source_dir": os.getenv("INGESTION_SOURCE_DIR", "./data/docs"),
+}
+
+# Cache feature flags 
+_FEATURE_FLAGS = {
+    "hybrid_search": os.getenv("HYBRID_SEARCH_ENABLED", "true").lower() == "true",
+    "rerank": os.getenv("RERANK_ENABLED", "true").lower() == "true",
+    "mmr": os.getenv("MMR_ENABLED", "true").lower() == "true",
+    "metadata_filter": os.getenv("METADATA_FILTER_ENABLED", "true").lower() == "true",
+    "query_expansion": os.getenv("QUERY_EXPANSION_ENABLED", "false").lower() == "true",
+    "hyde": os.getenv("HYDE_ENABLED", "false").lower() == "true",
 }
 
 
@@ -126,7 +155,7 @@ class IntentClassificationNode(Node):
         intent_result = classify_intent(query)
         keywords = extract_keywords(query)
         
-        logger.info(f"Intent: {intent_result['intent']} (confidence: {intent_result['confidence']:.2f})")
+        logger.debug(f"Intent: {intent_result['intent']} (confidence: {intent_result['confidence']:.2f})")
         
         return {
             "intent_data": intent_result,
@@ -145,35 +174,78 @@ class IntentClassificationNode(Node):
 # ============================================================================
 
 class EmbedQueryNode(Node):
-    """Generate embedding for user query."""
+    """Generate embedding for user query with optional query expansion.
+
+    - Can use LLM to generate alternative phrasings for better recall
+    - Supports HyDE (Hypothetical Document Embeddings) for complex queries
+    """
     
     def __init__(self):
         # Retry 3 times if embedding fails
         super().__init__(max_retries=3, wait=1)
     
-    def prep(self, shared: Dict) -> str:
-        """Read user query."""
-        return shared.get("user_query", "")
+    def prep(self, shared: Dict) -> Dict:
+        """Read user query and keywords."""
+        return {
+            "query": shared.get("user_query", ""),
+            "keywords": shared.get("keywords", [])
+        }
     
-    def exec(self, query: str) -> List[float]:
-        """Generate embedding vector."""
+    def exec(self, prep_data: Dict) -> Dict:
+        """Generate embedding vector, optionally with query expansion."""
+        query = prep_data["query"]
+        keywords = prep_data.get("keywords", [])
+        
         if not query:
             raise ValueError("Empty query for embedding")
         
-        embedding = get_embedding(query)
-        logger.info(f"Generated embedding: {len(embedding)} dimensions")
-        return embedding
+        # Use cached feature flags (avoid per-request env reads)
+        expansion_enabled = _FEATURE_FLAGS["query_expansion"]
+        hyde_enabled = _FEATURE_FLAGS["hyde"]
+        
+        # Apply HyDE if enabled (generates hypothetical answer to embed)
+        if hyde_enabled:
+            logger.debug("Applying HyDE (Hypothetical Document Embeddings)...")
+            enhanced_query = generate_hypothetical_answer(query, call_llm_func=call_llm)
+        elif expansion_enabled:
+            logger.debug("Applying query expansion...")
+            # Use expanded query variants for embedding
+            expanded = expand_query(query, num_expansions=2, call_llm_func=call_llm)
+            # Combine original + expansions for richer embedding
+            enhanced_query = " ".join(expanded)
+        else:
+            enhanced_query = query
+        
+        # Generate embedding for the (possibly enhanced) query
+        embedding = get_embedding(enhanced_query)
+        logger.debug(f"Generated embedding: {len(embedding)} dimensions")
+        
+        return {
+            "embedding": embedding,
+            "original_query": query,
+            "enhanced_query": enhanced_query if enhanced_query != query else None
+        }
     
-    def exec_fallback(self, prep_res: str, exc: Exception) -> List[float]:
+    def exec_fallback(self, prep_res: Dict, exc: Exception) -> Dict:
         """Fallback: return zero vector if embedding fails."""
         logger.error(f"Embedding failed after retries: {exc}")
-        # Return zero vector as fallback
-        embed_dim = int(os.getenv("EMBEDDING_DIM", "384"))
-        return [0.0] * embed_dim
+        # Return zero vector as fallback (use cached dimension)
+        embed_dim = _RAG_CONFIG["embedding_dim"]
+        return {
+            "embedding": [0.0] * embed_dim,
+            "original_query": prep_res.get("query", ""),
+            "enhanced_query": None
+        }
     
-    def post(self, shared: Dict, prep_res: str, exec_res: List[float]) -> str:
+    def post(self, shared: Dict, prep_res: Dict, exec_res: Dict) -> str:
         """Write embedding to shared store."""
-        shared["query_embedding"] = exec_res
+        shared["query_embedding"] = exec_res["embedding"]
+        
+        # Store expansion info for debugging/logging
+        if exec_res.get("enhanced_query"):
+            shared["enhanced_query"] = exec_res["enhanced_query"]
+            logger.debug(f"Query enhanced: {exec_res['enhanced_query'][:100]}...")
+        
         return "default"
 
 
@@ -182,48 +254,141 @@ class EmbedQueryNode(Node):
 # ============================================================================
 
 class SearchKnowledgeBaseNode(Node):
-    """Retrieve relevant documents from ChromaDB."""
+    """Retrieve relevant documents from ChromaDB with full RAG improvements.
+    
+    Implements four RAG improvements:
+    1. Metadata Filtering: Pre-filters documents by category/type based on query
+    2. Hybrid Search: Combines BM25 keyword search with vector similarity (RRF fusion)
+    3. MMR Diversity: Maximal Marginal Relevance to reduce redundancy
+    4. Reranking: Uses cross-encoder to re-score top candidates for precision
+    """
     
     def __init__(self):
         super().__init__(max_retries=2, wait=1)
     
-    def prep(self, shared: Dict) -> List[float]:
-        """Read query embedding."""
-        return shared.get("query_embedding", [])
+    def prep(self, shared: Dict) -> Dict:
+        """Read query embedding, text, and extract metadata hints."""
+        query_text = shared.get("user_query", "")
+        
+        # Extract metadata filtering hints from query (use cached flag)
+        metadata_hints = {}
+        metadata_filter = None
+        
+        if _FEATURE_FLAGS["metadata_filter"] and query_text:
+            metadata_hints = extract_metadata_hints(query_text)
+            
+            # Build ChromaDB filter from hints
+            if metadata_hints:
+                metadata_filter = build_metadata_filter(
+                    category=metadata_hints.get("category"),
+                    doc_type=metadata_hints.get("doc_type"),
+                    max_age_days=metadata_hints.get("max_age_days")
+                )
+                if metadata_filter:
+                    logger.debug(f"Applying metadata filter: {metadata_filter}")
+        
+        return {
+            "query_embedding": shared.get("query_embedding", []),
+            "query_text": query_text,
+            "metadata_filter": metadata_filter,
+            "metadata_hints": metadata_hints
+        }
     
-    def exec(self, query_embedding: List[float]) -> List[Dict]:
-        """Query ChromaDB for similar documents."""
+    def exec(self, prep_data: Dict) -> List[Dict]:
+        """Query ChromaDB with metadata filtering, hybrid search, MMR, then rerank."""
+        query_embedding = prep_data["query_embedding"]
+        query_text = prep_data["query_text"]
+        metadata_filter = prep_data.get("metadata_filter")
+        
         if not query_embedding or sum(query_embedding) == 0:
             logger.warning("Empty or zero embedding, skipping search")
             return []
         
-        # Fetch candidates for coverage
-        top_k = _get_int_env("RAG_TOP_K")
+        # Use cached config (avoid per-request env var reads)
+        top_k = _RAG_CONFIG["top_k"]
+        search_candidates = top_k * 2  # Fetch more for hybrid + MMR + reranking
+        
         # Threshold for quality filtering
-        min_score = _get_float_env("RAG_MIN_SCORE")
+        min_score = _RAG_CONFIG["min_score"]
         
-        # Query collection
-        results = query_collection(query_embedding, top_k=top_k)
+        # Query collection with metadata filter (if available)
+        # Try filtered search first, fallback to unfiltered if no results
+        vector_results = query_collection(
+            query_embedding,
+            top_k=search_candidates,
+            filter_metadata=metadata_filter
+        )
         
-        # Log scores for debugging
-        if results:
-            scores = [r["score"] for r in results]
-            logger.info(f"Retrieved scores: {scores}, min_score threshold: {min_score}")
+        # If filtered search returned too few results, try without filter
+        if metadata_filter and len(vector_results) < top_k:
+            logger.debug(f"Filtered search returned only {len(vector_results)} results, trying without filter...")
+            unfiltered_results = query_collection(query_embedding, top_k=search_candidates)
+            # Merge results, keeping filtered ones first
+            seen_ids = {r["id"] for r in vector_results}
+            for r in unfiltered_results:
+                if r["id"] not in seen_ids:
+                    vector_results.append(r)
+                    seen_ids.add(r["id"])
         
-        # Filter by minimum score
-        filtered_results = [r for r in results if r["score"] >= min_score]
+        # Log initial retrieval scores
+        if vector_results:
+            scores = [r["score"] for r in vector_results]
+            logger.debug(f"Vector search scores: {scores[:5]}... (showing first 5)")
         
-        logger.info(f"Found {len(results)} results, {len(filtered_results)} above threshold")
+        # Apply hybrid search if enabled (BM25 + Vector via RRF)
+        if _FEATURE_FLAGS["hybrid_search"] and query_text and vector_results:
+            logger.debug(f"Applying hybrid search (BM25 + Vector)...")
+            results = hybrid_search(
+                query=query_text,
+                vector_results=vector_results,
+                top_k=search_candidates  # Still get many for MMR + reranking
+            )
+            logger.debug(f"Hybrid search returned {len(results)} results")
+        else:
+            results = vector_results
+        
+        # Filter by minimum vector score
+        filtered_results = [r for r in results if r.get("score", 0) >= min_score]
+        
+        logger.debug(f"Found {len(results)} results, {len(filtered_results)} above vector threshold")
+        
+        # Apply MMR for diversity (before reranking to ensure diverse input to reranker)
+        if _FEATURE_FLAGS["mmr"] and len(filtered_results) > top_k:
+            logger.debug(f"Applying MMR diversity to {len(filtered_results)} results...")
+            mmr_candidates = top_k * 2  # Get more diverse candidates for reranking
+            filtered_results = mmr_rerank(
+                results=filtered_results,
+                query_embedding=query_embedding,
+                top_k=mmr_candidates,
+                score_key="score"  # Use vector score for MMR relevance
+            )
+            logger.debug(f"MMR selected {len(filtered_results)} diverse candidates")
+        
+        # Rerank using cross-encoder if we have results and a query
+        if filtered_results and query_text:
+            if _FEATURE_FLAGS["rerank"]:
+                logger.debug(f"Reranking {len(filtered_results)} results...")
+                filtered_results = rerank_results(query_text, filtered_results, top_k=top_k)
+                logger.debug(f"Reranking complete, returning top {len(filtered_results)} results")
+            else:
+                # Just truncate to top_k without reranking
+                filtered_results = filtered_results[:top_k]
+        
+        # Apply feedback-based score adjustments (boost good docs, penalize bad ones)
+        # Uses rerank_score if available, otherwise score
+        score_key = "rerank_score" if filtered_results and "rerank_score" in filtered_results[0] else "score"
+        filtered_results = apply_feedback_adjustments(filtered_results, score_key=score_key)
         
         return filtered_results
+
     
-    def post(self, shared: Dict, prep_res: List[float], exec_res: List[Dict]) -> str:
+    def post(self, shared: Dict, prep_res: Dict, exec_res: List[Dict]) -> str:
         """Write results and compile context."""
         shared["retrieved_docs"] = exec_res
         
         # Compile RAG context from documents
         if exec_res:
-            max_context_tokens = int(os.getenv("RAG_MAX_CONTEXT_TOKENS", "2000"))
+            max_context_tokens = _RAG_CONFIG["max_context_tokens"]
             
             # Improved: Deduplicate by source_file to avoid redundant chunks from same doc
             seen_sources = set()
@@ -241,8 +406,10 @@ class SearchKnowledgeBaseNode(Node):
                 chunk_index = metadata.get('chunk_index', '?')
                 total_chunks = metadata.get('total_chunks', '?')
                 
-                # Improved: More context about document structure
-                context_parts.append(f"[Document {i+1}] (Relevance: {doc['score']:.2f})")
+                # Show rerank score if available, then RRF, then vector score
+                relevance = doc.get('rerank_score', doc.get('rrf_score', doc.get('score', 0)))
+                
+                context_parts.append(f"[Document {i+1}] (Relevance: {relevance:.2f})")
                 context_parts.append(f"File: {source_file} (Chunk {chunk_index} of {total_chunks})")
                 context_parts.append(doc['document'])
                 context_parts.append("")
@@ -251,11 +418,12 @@ class SearchKnowledgeBaseNode(Node):
             rag_context = truncate_to_token_limit(rag_context, max_context_tokens)
             
             shared["rag_context"] = rag_context
-            logger.info(f"Compiled context from {len(unique_docs)} unique documents ({len(exec_res)} total chunks)")
+            logger.debug(f"Compiled context from {len(unique_docs)} unique documents ({len(exec_res)} total chunks)")
             return "docs_found"
         else:
             shared["rag_context"] = ""
             return "no_docs"
+
 
 
 # ============================================================================
@@ -330,8 +498,8 @@ Conversation History (look at the last 3 messages):
 Current Workflow State: {context['workflow_status']}"""
         
         # Debug: Log the prompt to see what decision maker sees
-        logger.info(f"Decision maker prompt (first 500 chars): {prompt[:500]}...")
-        logger.info(f"RAG context length: {len(context.get('rag_context', ''))} chars")
+        logger.debug(f"Decision maker prompt (first 500 chars): {prompt[:500]}...")
+        logger.debug(f"RAG context length: {len(context.get('rag_context', ''))} chars")
         
         prompt += """
 
@@ -351,11 +519,10 @@ analyze the context and decide the next action to help the employee in our offic
 5. Final Decision: Select the best action. Justify why it's superior to the alternatives now.
 
 ### DECISION RULES (READ CAREFULLY)
-1. **IF you have retrieved documents with scores > {doc_threshold}, YOU MUST ANSWER** - The knowledge base likely has relevant information.
-2. **LOOK DEEPER**: Check the document text for specific names, phone numbers, or steps even if the relevance score is moderate.
-3. **CONTACT INFO & ROLES**: If the user asks "who to contact" or "what does [Name] do", and the documents contain names linked to roles or topics, YOU MUST ANSWER. Look for "Contact [Name] for [Topic]" or "[Name] is responsible for [Topic]".
-4. **PHRASE MATCH**: If the user mentions a specific phrase (e.g. "lights are green") and a document contains that phrase, YOU MUST ANSWER based on that document.
-5. **DO NOT ask clarifying questions if you have good documents** - Use the retrieved context to answer directly.
+1. **TOPIC MATCH CHECK**: Before answering, verify the retrieved docs actually address the user's issue. A doc about "printer not working on VPN" does NOT answer "VPN not working" - these are different problems.
+2. **IF docs match the user's topic AND scores > {doc_threshold}, answer**. If docs are tangentially related (e.g., mention VPN but solve a different problem), **clarify** what the user needs.
+3. **CONTACT INFO & ROLES**: If the user asks "who to contact", and docs contain relevant contacts, answer.
+4. **VAGUE QUERIES**: For short queries like "vpn not working", "wifi issues", "help" - **clarify** what specific problem they're experiencing before assuming.
 6. You have searched {context['search_count']} times (max: {context['max_searches']}). If at max, choose 'answer' or 'clarify', NOT 'search_kb'.
 7. **PRIORITIZE SEARCH**: If you haven't searched yet and the query contains specific keywords (e.g., "router", "wifi", "who to ask"), choose 'search_kb' instead of 'clarify'.
 8. Only clarify if: (a) You have already searched and found nothing OR (b) Query is completely incomprehensible (e.g. "help", "it doesn't work") OR (c) Documents retrieved but irrelevant (score < {doc_threshold}).
@@ -452,7 +619,7 @@ Think carefully and make the best decision for the user."""
         assert "action" in decision, "Decision must have 'action' field"
         assert decision["action"] in allowed_actions, f"Action must be one of {allowed_actions}"
         
-        logger.info(f"Decision: {decision['action']} (confidence: {decision.get('confidence', 0):.2f})")
+        logger.debug(f"Decision: {decision['action']} (confidence: {decision.get('confidence', 0):.2f})")
         
         return decision
     
@@ -488,14 +655,14 @@ Think carefully and make the best decision for the user."""
         # Track search attempts to prevent infinite loops
         if exec_res["action"] == "search_kb":
             search_count = shared.get("search_count", 0)
-            max_searches = int(os.getenv("AGENT_MAX_TURNS", "5"))
+            max_searches = POLICY_LIMITS["max_turns"]
             
             if search_count >= max_searches:
                 logger.warning(f"Max search attempts ({max_searches}) reached, forcing answer")
                 return "answer"  # Force answer instead of more searching
             
             shared["search_count"] = search_count + 1
-            logger.info(f"Search attempt {search_count + 1}/{max_searches}")
+            logger.debug(f"Search attempt {search_count + 1}/{max_searches}")
         
         return exec_res["action"]
 
@@ -525,94 +692,38 @@ class GenerateAnswerNode(Node):
     
     def exec(self, context: Dict) -> Dict:
         """Generate answer using LLM."""
-        user_os = context.get('user_os', 'unknown')
-        
         prompt = f"""You are a helpful IT support assistant for Stibo Systems.
 
-    USER INFO
-    - OS: {user_os}
+USER QUESTION: "{context['user_query']}"
 
-    COMPANY NETWORK STATUS
-    {context['network_status'] if context['network_status'] else 'No company network status information available.'}
+KNOWLEDGE BASE:
+{context['rag_context'] or 'No relevant documents found.'}
 
-    KNOWLEDGE BASE CONTEXT
-    {context['rag_context'] if context['rag_context'] else 'No relevant documents found in knowledge base.'}
+CONVERSATION HISTORY: {context['conversation_history'] or 'None'}
 
-    Conversation History:
-    {context['conversation_history'] if context['conversation_history'] else 'No previous conversation.'}
+### INSTRUCTIONS
+1. **ANSWER THE QUESTION**: Read the user's question carefully and provide a direct answer using the knowledge base.
+2. **EXTRACT RELEVANT INFO**: If user asks "who is X" and docs mention X, extract and present that information clearly.
+3. **NO GENERIC RESPONSES**: Don't give contact info unless the user asked for it or the question can't be answered.
+4. **BE SPECIFIC**: If docs contain the answer, use it. Don't ignore relevant content.
+5. **ADMIT GAPS**: If docs don't contain the answer, say "I don't have information about that" rather than giving unrelated info.
 
-    INSTRUCTIONS (condensed)
-    - Answer using ONLY the provided context.
-    - Be concise (3–5 sentences). Use bullet points for procedures.
-    - Tailor instructions to the user's OS ({user_os}); avoid mentioning OS unless necessary.
-    - If docs match network issues, mention known service issues.
-    - If context is insufficient, say so and offer to create a ticket.
-    - Never include sensitive info (passwords, keys, PII).
-    - Format contact info as: Name - Role/Topic - Contact Details.
-    - Do not use markdown bolding in your response.
-
-    OUTPUT (YAML)
-1. Use OS-specific language, paths, and commands.
-2. Assume user is a standard employee; do not suggest admin tasks (e.g. firmware updates, router reboots).
-3. Do NOT mention the user's operating system unless it is critical for the specific instruction or the user asks.
-4. If the user's problem matches issues under company network status, say that there are known issues related to the affected service
-5. If context insufficient, say so, and offer to create a ticket
-6. NEVER include sensitive information (passwords, keys, personal data)
-7. Be friendly and professional
-8. CONTACT INFO: When providing contact information, format it clearly: Name - Role/Topic - Contact Details.
-
-    
-
-### AVAILABLE ANSWER FORMATS
-1.  factual_response
-    Description: Provide direct factual information or definitions
-    When to use: For "what is" questions or factual queries
-
-2.  step_by_step_instructions
-    Description: Explain a solution or fix for a reported issue
-    When to use: When documents provide specific solutions to problems
-
-3.  reference_summary
-    Description: Summarize key information from documentation
-    When to use: When user needs comprehensive but concise information
-
-### DECISION RULES & GUARDRAILS
-- STRICT SOURCE-BASED ANSWERS: Only provide information that is directly supported by the "Retrieved Knowledge Documents".
-- NO HALLUCINATION: Never invent steps, commands, error codes, or solutions not present in the source documents.
-- BE DIRECT AND CONCISE: Get straight to the answer without unnecessary preamble or fluff.
-- USE CLEAR FORMATTING: Apply bullet points for lists and numbered steps for procedures to enhance readability.
-- CITE SOURCES NATURALLY: Reference documents implicitly (e.g., "According to our documentation...", "The knowledge base indicates...").
-- MAINTAIN SECURITY: Never include or infer passwords, API keys, or sensitive information.
-- ACKNOWLEDGE LIMITATIONS: If the available documents don't fully answer the question, state what information you can provide and what's missing.
-
-### OUTPUT FORMAT
-Respond in YAML:
+### OUTPUT FORMAT (YAML)
 ```yaml
 action: <factual_response | step_by_step_instructions | reference_summary>
-confidence: <0.0 to 1.0>
-# Confidence scoring guide:
-# 1.0 = Direct answer found in "Retrieved Knowledge Documents" (e.g. exact steps, specific facts)
-# 0.8-0.9 = Answer inferred from documents or general knowledge with high certainty
-# 0.5-0.7 = Partial answer or general advice without specific documentation
-# < 0.5 = Guessing or unable to answer
+confidence: <0.0-1.0>
 response_to_user: |
-    <if factual_response: provide 1-2 sentences that would express the anwser to user's request>
-    <if step_by_step_instructions: provide a bulletpoint step-by-step list from the document>
-    <if reference_summary: anlyze the conversation history and summarize the key point on one message in 3-5 sentences>
+    <your response here>
 ```
-### RESPONSE STYLE GUIDELINES
-- Be conversational and empathetic, not robotic
-- Use bullet points for step_by_step_instructions
-- If using docs, cite them briefly: "According to [VPN Setup Guide]..."
 
-Provide the most direct and helpful answer possible using only the verified information from available sources."""
+Confidence: 1.0=exact match in docs, 0.8-0.9=inferred, 0.5-0.7=partial, <0.5=uncertain"""
 
         answer = call_llm(prompt, max_tokens=512)
 
         yaml_str = answer.split("```yaml")[1].split("```")[0].strip() if "```yaml" in answer else answer
         decision = yaml.safe_load(yaml_str)
 
-        logger.info(f"Generated answer: {len(decision)} chars")
+        logger.debug(f"Generated answer: {len(decision)} chars")
         return decision
     
     def exec_fallback(self, prep_res: Dict, exc: Exception) -> str:
@@ -839,7 +950,6 @@ class InteractiveTroubleshootNode(Node):
         return {
             "user_query": shared.get("user_query", ""),
             "user_os": shared.get("user_os", "unknown"),
-            "user_browser": shared.get("user_browser", "unknown"),
             "intent": shared.get("intent", {}),
             "doc_summaries": doc_summaries,
             "conversation_history": history_str,
@@ -905,14 +1015,23 @@ You are an intelligent troubleshooting assistant for Stibo Systems. Your job is 
 - If user shows frustration ("this isn't working", "nothing helps") → escalate
 - If user is engaged and cooperative → continue_troubleshoot
 - NEVER repeat a failed step - pivot to different approach
+
+### USER-ACTIONABLE FILTER (CRITICAL)
+The user is an END-USER at their computer, NOT an IT administrator. ONLY suggest steps they can perform:
+INCLUDE: Software settings, app restarts, network reconnection, device restart, checking settings panels
+INCLUDE: Clearing cache, updating apps, changing configurations in their control
+EXCLUDE: Checking router hardware, server-side fixes
+EXCLUDE: Physical infrastructure checks (router placement, overheating, power cycling network equipment)
+EXCLUDE: Admin tasks requiring elevated access (firmware updates, network configuration, server restarts)
+If documentation contains IT-admin steps, SKIP them and focus only on user-actionable troubleshooting.
 - Use official documentation when available, but explain the reasoning
 - Start with most common/simple causes before rare/complex ones
 
 ### DIAGNOSTIC REASONING FRAMEWORK
-For hardware issues: Power → Connections → Drivers → Settings → Hardware failure
-For software issues: Restart → Updates → Config → Cache/temp files → Reinstall → System issue
-For network issues: Connection → DNS → Firewall → Proxy → Credentials → Server side
-For access issues: Credentials → Permissions → Account status → System policy → Infrastructure
+Hardware issues: Power → Connections → Drivers → Settings → Hardware failure
+Software issues: Restart → Updates → Config → Cache/temp files → Reinstall → System issue
+Network issues: Connection → DNS → Firewall → Proxy → Credentials → Server side
+Access issues: Credentials → Permissions → Account status → System policy → Infrastructure
 
 ### PLATFORM-SPECIFIC GUIDANCE
 **Use the User System info {context.get('user_os')} to tailor all instructions:**
@@ -1067,7 +1186,7 @@ Think like a senior systems engineer who teaches while troubleshooting."""
                 f"Hypothesis: {hypothesis}"
             )
             
-            return "continue"
+            return "default"
 
 
 # ============================================================================
@@ -1104,8 +1223,8 @@ class LoadDocumentsNode(Node):
     """Load documents from source directory."""
     
     def prep(self, shared: Dict) -> str:
-        """Get source directory from shared or env."""
-        return shared.get("source_dir", os.getenv("INGESTION_SOURCE_DIR", "./data/docs"))
+        """Get source directory from shared or cached config."""
+        return shared.get("source_dir", _RAG_CONFIG["source_dir"])
     
     def exec(self, source_dir: str) -> List[Dict]:
         """Load all documents from directory using document parser."""
@@ -1174,9 +1293,9 @@ class ChunkDocumentsNode(BatchNode):
         content = document.get("content", "")
         metadata = document.get("metadata", {})
         
-        # Chunk configuration from environment
-        chunk_size = _get_int_env("INGESTION_CHUNK_SIZE")
-        chunk_overlap = _get_int_env("INGESTION_CHUNK_OVERLAP")
+        # Use cached chunk configuration
+        chunk_size = _RAG_CONFIG["chunk_size"]
+        chunk_overlap = _RAG_CONFIG["chunk_overlap"]
 
         chunks = chunk_text(content, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
 
@@ -1259,9 +1378,21 @@ class StoreInChromaDBNode(Node):
         return len(chunks)
     
     def post(self, shared: Dict, prep_res: Dict, exec_res: int) -> str:
-        """Log completion."""
+        """Log completion and rebuild BM25 index for hybrid search."""
         logger.info(f"Successfully indexed {exec_res} chunks in ChromaDB")
         shared["indexed_count"] = exec_res
+        
+        # Rebuild BM25 index for hybrid search if enabled (use cached flag)
+        if _FEATURE_FLAGS["hybrid_search"] and exec_res > 0:
+            try:
+                from utils.chromadb_client import get_collection
+                collection = get_collection()
+                if collection:
+                    num_indexed = rebuild_bm25_from_chromadb(collection)
+                    logger.info(f"Rebuilt BM25 index after indexing: {num_indexed} documents")
+            except Exception as e:
+                logger.warning(f"Failed to rebuild BM25 index: {e}")
+        
         return "default"
 
 # ============================================================================

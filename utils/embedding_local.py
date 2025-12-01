@@ -41,9 +41,9 @@ def get_embedding(text: str) -> List[float]:
     # Load model
     model_instance = _load_model()
     
-    # Generate real embedding
-    vec = model_instance.encode([text], normalize_embeddings=True)[0]
-    return [float(x) for x in vec]
+    # Generate real embedding (encode single string directly, avoid list overhead)
+    vec = model_instance.encode(text, normalize_embeddings=True)
+    return vec.tolist()
 
  # Test standalone embedding function
 if __name__ == "__main__":

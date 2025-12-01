@@ -4,9 +4,9 @@ Picked Groq because it has a free api and is actually pretty fast.
 """
 from groq import Groq, RateLimitError
 import os
-import logging
+from utils.logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # Cached client instance
 _CLIENT = None

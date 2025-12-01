@@ -10,12 +10,15 @@ IT support teams face repetitive inquiries about common issues (password resets,
 
 An **Agentic IT Support Chatbot** that:
 
-- Answers factual IT questions using a local knowledge base
+- Answers factual IT questions using a local knowledge base (RAG with ChromaDB)
 - Guides employees through interactive troubleshooting workflows
-- Searches for existing tickets related to ongoing major incidents
-- Creates well-formatted Jira tickets with logs and redacted sensitive information
+- Monitors company network status page for ongoing incidents
+- Redacts sensitive information from user inputs before processing
 - Maintains conversation context across multi-turn interactions
 - Operates with privacy-first principles (local embeddings, no sensitive data to external APIs)
+- Provides OS-specific guidance based on user's operating system
+- Supports document upload and indexing via API
+- Includes observability via Langfuse tracing integration
 
 ### User Stories
 
@@ -29,17 +32,23 @@ An **Agentic IT Support Chatbot** that:
    - Example: "My printer won't print."
    - Expected: Bot asks diagnostic questions, provides solutions, tracks progress.
 
-3. **Major Incident Detection**: "As an employee, I want to know if my issue is part of a widespread problem."
+3. **Network Status Check**: "As an employee, I want to know if my issue is part of a widespread problem."
 
-   - Example: "I can't access SharePoint."
-   - Expected: Bot checks for similar active tickets and informs about known outages.
+   - Example: "Is there a network outage?"
+   - Expected: Bot checks company status page and informs about known service disruptions.
 
 4. **Ticket Creation**: "As an employee with an unresolved issue, I want the bot to create a properly formatted ticket."
 
    - Example: After failed troubleshooting, bot offers to create ticket with collected context.
+   - **Status**: Not yet implemented - placeholder node exists.
 
 5. **Privacy Protection**: "As an IT admin, I want sensitive information redacted from logs and tickets."
+
    - Expected: Bot automatically redacts passwords, API keys, personal data before logging.
+
+6. **Document Upload**: "As an IT admin, I want to upload new documentation to the knowledge base."
+   - Example: Upload PDF or HTML files via API endpoint.
+   - Expected: Documents are parsed, chunked, embedded, and indexed into ChromaDB.
 
 ### Success Criteria
 
@@ -52,158 +61,154 @@ An **Agentic IT Support Chatbot** that:
 
 ## 2. Flow Design
 
+> Notes for AI:
+>
+> 1. Consider the design patterns of agent, map-reduce, rag, and workflow. Apply them if they fit.
+> 2. Present a concise, high-level description of the workflow.
+
 ### Applicable Design Patterns
 
-1. **Agent Pattern**: The main orchestrator uses agentic decision-making to route between different specialized sub-agents (Search Agent, Chat Agent, Ticket Agent).
+1. **Agent Pattern**: The DecisionMakerNode uses agentic decision-making to route between different actions (answer, clarify, troubleshoot, search_kb, search_tickets, create_ticket).
 
 2. **RAG Pattern**:
 
-   - **Offline**: Ingest IT documentation → Chunk → Embed (local model) → Store in ChromaDB
+   - **Offline**: Ingest IT documentation → Chunk (semantic) → Embed (local model) → Store in ChromaDB
    - **Online**: User query → Embed → Retrieve top-k documents → Generate answer
 
 3. **Workflow Pattern**: Interactive troubleshooting follows a sequential workflow with user feedback loops.
 
-4. **Map-Reduce Pattern**: Ticket search across multiple systems (Jira, internal DB) can be parallelized and aggregated.
-
 ### Flow High-Level Design
 
-The system orchestrates multiple specialized agents coordinated by a central Decision Maker:
+The system has four main flows:
+
+1. **QueryFlow**: Main query answering flow with agent routing
+2. **IndexingFlow**: Offline document indexing for RAG
+3. **SimpleQueryFlow**: Simplified flow for testing (direct search → answer)
+4. **NetworkStatusFlow**: Async flow for checking company status page
 
 ```mermaid
 flowchart TD
-    A["Employee starts chat"] --> B["Parse & Classify Intent"]
-    B --> C{"Check ongoing major incidents"}
+    subgraph QueryFlow["Main Query Flow"]
+        A[RedactInputNode] --> B[IntentClassificationNode]
+        B --> C[EmbedQueryNode]
+        C --> D[SearchKnowledgeBaseNode]
+        D -->|docs_found| E[DecisionMakerNode]
+        D -->|no_docs| E
 
-    C -- "Incident Found" --> D["Inform about global issue"]
-    D --> E["Update existing ticket: +1 affected user"]
-    E --> Z["End Session"]
+        E -->|answer| F[GenerateAnswerNode]
+        E -->|clarify| G[AskClarifyingQuestionNode]
+        E -->|search_kb| C
+        E -->|troubleshoot| H[InteractiveTroubleshootNode]
+        E -->|search_tickets| I[NotImplementedNode]
+        E -->|create_ticket| J[NotImplementedNode]
 
-    C -- "No Incident" --> F["Decision Maker Node"]
-    F --> G{"Route to Agent"}
-
-    G -- "Factual Query" --> H["Search Agent: Query KB"]
-    H --> I["LLM Chat: Format Answer"]
-    I --> J{"Employee Satisfied?"}
-
-    J -- "Yes" --> K["Mark Resolved"]
-    K --> Z
-
-    J -- "No/Unclear" --> L["LLM Chat: Ask Clarifying Questions"]
-    L --> F
-
-    G -- "Troubleshooting" --> M["Search Agent: Find Workflow"]
-    M --> N["Interactive Troubleshooting Node"]
-    N --> O{"Issue Resolved?"}
-
-    O -- "Yes" --> K
-    O -- "No" --> P["Search Agent: Check Similar Tickets"]
-
-    P --> Q{"Similar Ticket Found?"}
-    Q -- "Yes" --> R["Ticket Agent: Attach logs & update"]
-    R --> Z
-
-    Q -- "No" --> S["Ticket Agent: Create New Ticket"]
-    S --> Z
-
-    G -- "Navigation/Access" --> T["Search Agent: Find Resource"]
-    T --> I
-
-    subgraph AGENT_COMPONENTS["Agent Components"]
-        DC["Decision Maker<br/>Routes queries to specialized agents"]
-        SA["Search Agent<br/>KB retrieval + Jira search"]
-        CA["Chat Agent<br/>User interaction + context"]
-        TA["Ticket Agent<br/>Jira operations + redaction"]
+        F --> K[FormatFinalResponseNode]
+        G --> K
+        H --> K
+        I --> K
+        J --> K
     end
+```
 
-    subgraph SHARED_STORE["Shared Store"]
-        SS1["session_id, user_query"]
-        SS2["conversation_history"]
-        SS3["retrieved_docs"]
-        SS4["workflow_state"]
-        SS5["ticket_info"]
+```mermaid
+flowchart LR
+    subgraph IndexingFlow["Offline Indexing Flow"]
+        L[LoadDocumentsNode] --> M[ChunkDocumentsNode]
+        M --> N[EmbedDocumentsNode]
+        N --> O[StoreInChromaDBNode]
+    end
+```
+
+```mermaid
+flowchart LR
+    subgraph NetworkStatusFlow["Network Status Flow"]
+        P[StatusQueryNode]
     end
 ```
 
 ### Detailed Node Flow
 
-#### Main Flow Nodes:
+#### Main Query Flow Nodes:
 
-1. **IntentClassificationNode**
+1. **RedactInputNode**
+
+   - Redacts sensitive information (passwords, API keys, tokens) from user input
+   - Stores redacted query for all downstream processing
+
+2. **IntentClassificationNode**
 
    - Classifies query intent: factual / troubleshooting / navigation
-   - Detects greetings, farewells, satisfaction signals
+   - Extracts keywords for search optimization
 
-2. **CheckMajorIncidentNode**
+3. **EmbedQueryNode**
 
-   - Searches Jira for active high-priority tickets
-   - Checks if employee's issue matches known outages
-
-3. **DecisionMakerNode** (Agent)
-
-   - Context: user_query, intent, conversation_history, retrieved_docs
-   - Actions: `search_kb`, `troubleshoot`, `search_tickets`, `create_ticket`, `answer`, `clarify`
-   - Returns action name to route flow
+   - Generates embedding for user query using local sentence-transformers
+   - Retries up to 3 times on failure
 
 4. **SearchKnowledgeBaseNode**
 
-   - Embeds user query locally
-   - Retrieves top-k relevant documents from ChromaDB
-   - Stores results in shared store
+   - Queries ChromaDB with query embedding
+   - Filters results by minimum score threshold
+   - Returns "docs_found" or "no_docs" action
 
-5. **GenerateAnswerNode**
+5. **DecisionMakerNode** (Agent)
+
+   - Context: user_query, user_os, intent, conversation_history, retrieved_docs, network_status
+   - Actions: `search_kb`, `troubleshoot`, `search_tickets`, `create_ticket`, `answer`, `clarify`
+   - Returns action name to route flow
+
+6. **GenerateAnswerNode**
 
    - Formats answer using LLM (Groq API)
    - Uses retrieved docs as context
-   - Ensures no sensitive data in prompt
+   - Provides OS-specific instructions
 
-6. **InteractiveTroubleshootingNode** (Batch + Async)
+7. **AskClarifyingQuestionNode**
 
-   - Guides user through step-by-step workflow
-   - Waits for user feedback after each step
-   - Tracks progress in conversation memory
+   - Generates specific clarifying questions when query is ambiguous
+   - Avoids redundant questions based on conversation history
 
-7. **SearchJiraTicketsNode**
+8. **InteractiveTroubleshootNode**
 
-   - Queries Jira API for similar open tickets
-   - Compares query embedding to ticket embeddings
+   - Detects user intent changes (exit, continue, escalate)
+   - Provides diagnostic reasoning and OS-specific steps
+   - Tracks troubleshooting state and failed steps
 
-8. **CreateTicketNode**
+9. **FormatFinalResponseNode**
 
-   - Collects context from conversation
-   - Redacts sensitive information
-   - Creates Jira ticket with proper formatting
+   - Formats final response and saves to conversation memory
 
-9. **UpdateTicketNode**
-   - Attaches logs and additional context
-   - Redacts sensitive data
-   - Links related tickets
+10. **NotImplementedNode**
+    - Placeholder for ticket search and creation (not yet implemented)
 
-#### Sub-Flows:
-
-**Offline Indexing Flow** (runs periodically or on-demand):
+#### Offline Indexing Flow:
 
 ```
-LoadDocuments → ChunkDocuments → EmbedChunks → StoreInChromaDB
+LoadDocumentsNode → ChunkDocumentsNode → EmbedDocumentsNode → StoreInChromaDBNode
 ```
 
-**Interactive Troubleshooting Sub-Flow**:
-
-```
-LoadWorkflow → PresentStep → WaitUserFeedback → EvaluateProgress → (loop or exit)
-```
+- **LoadDocumentsNode**: Loads .txt, .md, .html, .pdf files from source directory
+- **ChunkDocumentsNode** (BatchNode): Semantic chunking with embedding-based coherence
+- **EmbedDocumentsNode** (BatchNode): Generates embeddings for each chunk
+- **StoreInChromaDBNode**: Inserts chunks and embeddings into ChromaDB
 
 ---
 
 ## 3. Utility Functions
 
-### Required Utilities
+> Notes for AI:
+>
+> 1. Understand the utility function definition thoroughly by reviewing the doc.
+> 2. Include only the necessary utility functions, based on nodes in the flow.
+
+### Implemented Utilities
 
 1. **Call LLM** (`utils/call_llm_groq.py`)
 
-   - **Input**: `prompt: str`
+   - **Input**: `prompt: str`, `max_tokens: int = 1024`
    - **Output**: `response: str`
    - **Necessity**: Used by most nodes for LLM-based tasks (answer generation, decision making)
-   - **Current Implementation**: Uses Groq API with llama-3.3-70b-versatile model
+   - **Implementation**: Uses Groq API with configurable model
    - **Environment Variables**: `GROQ_API_KEY`, `GROQ_MODEL`
 
 2. **Get Embedding** (`utils/embedding_local.py`)
@@ -211,74 +216,97 @@ LoadWorkflow → PresentStep → WaitUserFeedback → EvaluateProgress → (loop
    - **Input**: `text: str`
    - **Output**: `vector: List[float]` (384-dim for all-MiniLM-L6-v2)
    - **Necessity**: Used for query embedding and document indexing
-   - **Current Implementation**: Uses sentence-transformers with model caching
-   - **Environment Variables**: `EMBED_MODEL`, `EMBEDDING_DEVICE`, `EMBEDDING_NORMALIZE`
+   - **Implementation**: Uses sentence-transformers with model caching
+   - **Environment Variables**: `EMBED_MODEL`
 
 3. **Intent Classifier** (`utils/intent_classifier.py`)
 
    - **Input**: `query: str`
-   - **Output**: `{"intent": str, "confidence": float, "scores": dict}`
-   - **Necessity**: Routes queries to appropriate agents
-   - **Current Implementation**: Rule-based classification for factual/troubleshooting/navigation
+   - **Output**: `{"intent": str, "confidence": float}` - Only the winning intent is returned
+   - **Necessity**: Routes queries to appropriate actions
+   - **Implementation**: Optimized rule-based classification using frozensets for O(1) keyword lookup
+   - **Additional Functions**: `extract_keywords()`, `is_greeting()`, `is_farewell()`
 
 4. **Conversation Memory** (`utils/conversation_memory.py`)
+
    - **Input**: `session_id: str`, operations (add_message, get_history, set_workflow_state)
    - **Output**: Session data, conversation history, workflow state
    - **Necessity**: Maintains context across multi-turn conversations
-   - **Current Implementation**: In-memory session store with workflow tracking
+   - **Implementation**: In-memory session store with workflow tracking and cleanup
 
-### Additional Utilities Needed
-
-5. **ChromaDB Client** (`utils/chromadb_client.py`) ⚠️ **TO BE IMPLEMENTED**
+5. **ChromaDB Client** (`utils/chromadb_client.py`)
 
    - **Input**: Various (query_vector, document_chunks, metadata)
    - **Output**: Search results, insertion confirmations
    - **Necessity**: Interface for vector database operations
    - **Functions**:
-     - `initialize_client() -> ChromaClient`
-     - `create_collection(name: str) -> Collection`
-     - `insert_documents(collection, chunks: List[str], embeddings: List[List[float]], metadata: List[dict])`
-     - `query_collection(collection, query_embedding: List[float], top_k: int) -> List[dict]`
-   - **Environment Variables**: `CHROMADB_HOST`, `CHROMADB_PORT`, `CHROMADB_COLLECTION`
+     - `initialize_client()` - Creates ChromaDB client (server or persistent mode)
+     - `get_collection()` - Gets or creates collection with cosine similarity
+     - `insert_documents()` - Inserts chunks with embeddings and metadata
+     - `query_collection()` - Queries collection with embedding vector
+     - `delete_documents_by_source()` - Deletes documents by source file
+     - `get_collection_stats()` - Returns collection statistics
+   - **Environment Variables**: `CHROMADB_MODE`, `CHROMADB_HOST`, `CHROMADB_PORT`, `CHROMADB_COLLECTION`, `CHROMADB_PERSIST_DIR`
 
-6. **Document Chunker** (`utils/chunker.py`) ⚠️ **TO BE IMPLEMENTED**
+6. **Document Chunker** (`utils/chunker.py`)
 
-   - **Input**: `text: str, chunk_size: int, overlap: int`
+   - **Input**: `text: str, chunk_size: int, chunk_overlap: int`
    - **Output**: `List[str]` (text chunks)
    - **Necessity**: Breaks large documents into embeddable chunks
-   - **Strategy**: Recursive character splitting with overlap
-   - **Environment Variables**: `INGESTION_CHUNK_SIZE`, `INGESTION_CHUNK_OVERLAP`
-
-7. **Jira Client** (`utils/jira_client.py`) ⚠️ **TO BE IMPLEMENTED**
-
-   - **Input**: Various (query parameters, ticket data)
-   - **Output**: Ticket objects, search results
-   - **Necessity**: Interfaces with Jira for ticket operations
+   - **Implementation**: Semantic chunking using spaCy sentence tokenization and embedding similarity
    - **Functions**:
-     - `search_tickets(jql: str) -> List[dict]`
-     - `create_ticket(project: str, summary: str, description: str, **kwargs) -> dict`
-     - `update_ticket(ticket_id: str, fields: dict) -> dict`
-     - `add_comment(ticket_id: str, comment: str)`
-   - **Environment Variables**: `JIRA_URL`, `JIRA_USER`, `JIRA_API_TOKEN`, `JIRA_PROJECT`
+     - `chunk_text()` - Main chunking function
+     - `semantic_chunk_sentences()` - Groups sentences by semantic coherence
+     - `truncate_to_token_limit()` - Truncates text to token limit
+   - **Environment Variables**: `INGESTION_CHUNK_SIZE`, `INGESTION_CHUNK_OVERLAP`, `INGESTION_SIMILARITY_THRESHOLD`, `SPACY_MODEL`
 
-8. **Redactor** (`utils/redactor.py`) ⚠️ **TO BE IMPLEMENTED**
+7. **Redactor** (`utils/redactor.py`)
 
-   - **Input**: `text: str, patterns: List[str]`
+   - **Input**: `text: str, patterns: tuple[str, ...]`
    - **Output**: `redacted_text: str`
-   - **Necessity**: Removes sensitive information before logging/ticketing
-   - **Patterns**: Passwords, API keys, email addresses, IP addresses, personal names
-   - **Implementation**: Regex-based pattern matching with configurable rules
+   - **Necessity**: Removes sensitive information before logging/processing
+   - **Patterns**: API keys, passwords, tokens, AWS keys, private keys
+   - **Functions**:
+     - `redact_text()` - Redacts patterns from text
+     - `redact_dict()` - Recursively redacts dictionary values
+     - `is_sensitive()` - Checks if text contains sensitive data
+     - `get_redaction_summary()` - Reports what was redacted
 
-9. **Document Loader** (`utils/document_loader.py`) ⚠️ **TO BE IMPLEMENTED**
-   - **Input**: `source_dir: str, file_types: List[str]`
-   - **Output**: `List[dict]` with `{"path": str, "content": str, "metadata": dict}`
-   - **Necessity**: Loads IT documentation from various formats
-   - **Supported Formats**: .txt, .md, .pdf, .docx
-   - **Environment Variables**: `INGESTION_SOURCE_DIR`
+8. **Document Parser** (`utils/document_parser.py`)
+
+   - **Input**: `filepath: str`
+   - **Output**: `{"text": str, "metadata": dict}`
+   - **Necessity**: Parses various document formats for indexing
+   - **Supported Formats**: .pdf (with pdfplumber), .html/.htm (with BeautifulSoup)
+   - **Classes**:
+     - `PDFParser` - Extracts text with formatting from PDFs
+     - `HTMLParser` - Extracts text from HTML with style preservation
+
+9. **Status Retrieval** (`utils/status_retrieval.py`)
+   - **Input**: None (reads from company status page)
+   - **Output**: `List[Dict]` with event titles and messages
+   - **Necessity**: Checks company network status for ongoing incidents
+   - **Implementation**: Uses Playwright for async web scraping
+   - **Functions**:
+     - `scrape_session()` - Main async scraping function
+     - `format_status_results()` - Formats results for display
+
+### Not Yet Implemented
+
+10. **Jira Client** (`utils/jira_client.py`) ⚠️ **PLANNED**
+    - **Purpose**: Interface with Jira for ticket operations
+    - **Planned Functions**:
+      - `search_tickets(jql: str) -> List[dict]`
+      - `create_ticket(project: str, summary: str, description: str, **kwargs) -> dict`
+      - `update_ticket(ticket_id: str, fields: dict) -> dict`
+      - `add_comment(ticket_id: str, comment: str)`
+    - **Environment Variables**: `JIRA_URL`, `JIRA_USER`, `JIRA_API_TOKEN`, `JIRA_PROJECT`
 
 ---
 
 ## 4. Data Design
+
+> Notes for AI: Try to minimize data redundancy
 
 ### Shared Store Schema
 
@@ -288,24 +316,31 @@ The shared store uses an in-memory dictionary structure for real-time operations
 shared = {
     # Session Context
     "session_id": "uuid-string",
-    "user_id": "employee-email-or-id",
-    "timestamp": "2025-10-06T10:30:00Z",
+    "user_os": "windows",  # User's operating system for tailored responses
 
-    # Current Query
-    "user_query": "My VPN keeps disconnecting",
+    # Input Processing
+    "original_query": "My VPN keeps disconnecting, password is abc123",
+    "user_query": "My VPN keeps disconnecting, password is [REDACTED]",  # After redaction
+    "had_sensitive_data": True,  # Flag if redaction occurred
+    "redaction_notice": "Your message contained sensitive data that was removed for security.",
+
+    # Intent Classification
     "intent": {
         "intent": "troubleshooting",
         "confidence": 0.85,
         "scores": {"factual": 0.1, "troubleshooting": 0.85, "navigation": 0.05}
     },
-    "keywords": ["vpn", "disconnect", "connection"],
 
-    # Conversation State
+    # Conversation State (from ConversationMemory)
     "conversation_history": [
         {"role": "user", "content": "...", "timestamp": "..."},
         {"role": "assistant", "content": "...", "timestamp": "..."}
     ],
-    "turn_count": 3,
+
+    # Network Status Results (from StatusQueryNode)
+    "status_results": [
+        {"title": "Network Outage - Building A", "message": "Investigation in progress"}
+    ],
 
     # RAG Results
     "query_embedding": [0.123, 0.456, ...],  # 384-dim vector
@@ -314,65 +349,33 @@ shared = {
             "id": "doc-123",
             "content": "VPN troubleshooting steps...",
             "metadata": {
-                "source": "vpn_guide.md",
-                "category": "networking",
-                "last_updated": "2025-09-15"
+                "source_file": "vpn_guide.md",
+                "category": "networking"
             },
             "score": 0.92
-        },
-        # ... top_k results
-    ],
-    "rag_context": "Compiled text from retrieved_docs for LLM prompt",
-
-    # Decision Making
-    "decision": {
-        "action": "troubleshoot",  # search_kb | troubleshoot | search_tickets | create_ticket | answer | clarify
-        "reasoning": "User reported technical issue requiring step-by-step guidance",
-        "confidence": 0.88
-    },
-
-    # Workflow State (for interactive troubleshooting)
-    "workflow_state": {
-        "workflow_id": "vpn_troubleshooting",
-        "issue": "VPN disconnection",
-        "all_steps": [
-            {"step": 1, "action": "Check internet connection", "status": "completed"},
-            {"step": 2, "action": "Restart VPN client", "status": "in_progress"},
-            {"step": 3, "action": "Check firewall settings", "status": "pending"}
-        ],
-        "current_step_index": 1,
-        "completed_steps": [0],
-        "status": "in_progress"  # in_progress | resolved | escalated
-    },
-
-    # Ticket Management
-    "major_incident": {
-        "found": True,
-        "ticket_id": "ITSUP-1234",
-        "summary": "SharePoint service outage",
-        "affected_count": 47
-    },
-    "similar_tickets": [
-        {
-            "ticket_id": "ITSUP-5678",
-            "summary": "VPN connection drops",
-            "status": "In Progress",
-            "similarity_score": 0.89
         }
     ],
-    "ticket_created": {
-        "ticket_id": "ITSUP-9999",
-        "summary": "VPN keeps disconnecting",
-        "description": "...",
-        "logs_attached": True
+
+    # Decision Making (Agent Loop)
+    "decision": "answer",  # search_kb | answer | clarify | troubleshoot | not_implemented
+    "search_count": 0,  # Tracks number of KB searches (max 3)
+
+    # Troubleshooting State (from ConversationMemory workflow_state)
+    "troubleshoot_state": {
+        "issue": "VPN disconnection",
+        "steps": [
+            "Check internet connection",
+            "Restart VPN client",
+            "Check firewall settings"
+        ],
+        "current_step_index": 1,
+        "status": "in_progress"  # in_progress | resolved | failed
     },
 
     # Final Response
-    "response": {
-        "text": "I've created ticket ITSUP-9999 for you...",
-        "action_taken": "ticket_created",
-        "requires_followup": False
-    }
+    "response": "Based on the documentation, here are the steps...",
+    "needs_input": False,  # True if waiting for user response
+    "is_clarifying": False,  # True if asking clarifying question
 }
 ```
 
@@ -384,17 +387,14 @@ shared = {
 
 ```python
 {
-    "id": "doc-hash-chunk-index",  # Unique identifier
+    "id": "source_file-chunk_index",  # e.g., "vpn_guide.md-0"
     "embedding": [0.123, 0.456, ...],  # 384-dim vector
-    "document": "Text content of the chunk",  # The actual text
+    "document": "Text content of the chunk",
     "metadata": {
         "source_file": "vpn_setup_guide.md",
-        "category": "networking",  # networking | hardware | software | access | security
-        "doc_type": "guide",  # guide | faq | troubleshooting | policy
-        "last_updated": "2025-09-15",
         "chunk_index": 0,
-        "total_chunks": 5,
-        "tags": ["vpn", "remote-access", "security"]
+        "title": "VPN Setup Guide",  # Extracted from document
+        "indexed_at": "2025-01-15T10:30:00Z"
     }
 }
 ```
@@ -413,7 +413,10 @@ session_data = {
         {"role": "assistant", "content": "...", "timestamp": "..."}
     ],
     "workflow_state": {
-        # Same structure as workflow_state in shared store
+        "issue": "VPN problem",
+        "steps": ["step 1", "step 2"],
+        "current_step_index": 0,
+        "status": "in_progress"
     }
 }
 ```
@@ -421,6 +424,8 @@ session_data = {
 ---
 
 ## 5. Node Design
+
+> Notes for AI: Carefully decide whether to use Batch/Async Node/Flow.
 
 ### Shared Store Access Patterns
 
@@ -430,58 +435,37 @@ All nodes follow the pattern: **Read in `prep()` → Process in `exec()` → Wri
 
 ---
 
-#### 1. IntentClassificationNode
+#### 1. RedactInputNode (NEW)
+
+- **Type**: Regular Node
+- **Purpose**: Remove sensitive data (passwords, tokens, API keys) from user input
+- **Steps**:
+  - **prep**: Read `shared["user_query"]`
+  - **exec**: Call `redact_text(query)` from `utils/redactor.py`
+  - **post**:
+    - Store original in `shared["original_query"]`
+    - Write redacted to `shared["user_query"]`
+    - Set `shared["had_sensitive_data"]` flag
+    - Return `"default"`
+
+---
+
+#### 2. IntentClassificationNode
 
 - **Type**: Regular Node
 - **Purpose**: Classify user query intent for routing decisions
 - **Steps**:
   - **prep**: Read `shared["user_query"]`
-  - **exec**: Call `classify_intent(query)` utility, returns intent dict
+  - **exec**: Call `classify_intent(query)` utility
   - **post**: Write `shared["intent"]`, return `"default"`
 
 ---
 
-#### 2. CheckMajorIncidentNode
-
-- **Type**: Regular Node
-- **Purpose**: Check if query matches ongoing major incidents
-- **Steps**:
-  - **prep**: Read `shared["user_query"]`, `shared["keywords"]`
-  - **exec**:
-    - Query Jira for high-priority open tickets
-    - Compare query similarity to incident descriptions
-    - Return incident info or None
-  - **post**: Write `shared["major_incident"]`, return `"incident_found"` or `"no_incident"`
-
----
-
-#### 3. InformGlobalIssueNode
-
-- **Type**: Regular Node
-- **Purpose**: Inform user about known widespread problem
-- **Steps**:
-  - **prep**: Read `shared["major_incident"]`
-  - **exec**: Format message using LLM: "This is a known issue affecting X users..."
-  - **post**: Write `shared["response"]`, return `"default"`
-
----
-
-#### 4. UpdateExistingTicketNode
-
-- **Type**: Regular Node
-- **Purpose**: Add user to affected count of existing incident ticket
-- **Steps**:
-  - **prep**: Read `shared["major_incident"]`, `shared["user_id"]`
-  - **exec**: Call Jira API to add comment and update affected user list
-  - **post**: Write `shared["ticket_created"]`, return `"default"`
-
----
-
-#### 5. EmbedQueryNode
+#### 3. EmbedQueryNode
 
 - **Type**: Regular Node
 - **Purpose**: Generate embedding for user query
-- **Max Retries**: 3 (in case local model fails)
+- **Max Retries**: 3
 - **Steps**:
   - **prep**: Read `shared["user_query"]`
   - **exec**: Call `get_embedding(query)` utility
@@ -489,282 +473,220 @@ All nodes follow the pattern: **Read in `prep()` → Process in `exec()` → Wri
 
 ---
 
-#### 6. SearchKnowledgeBaseNode
+#### 4. SearchKnowledgeBaseNode
 
 - **Type**: Regular Node
 - **Purpose**: Retrieve relevant documents from ChromaDB
 - **Max Retries**: 2
 - **Steps**:
-  - **prep**: Read `shared["query_embedding"]`
-  - **exec**:
-    - Query ChromaDB with embedding
-    - Filter by minimum score threshold (from env: `RAG_MIN_SCORE`)
-    - Return top-k results (from env: `RAG_TOP_K`)
+  - **prep**: Read `shared["query_embedding"]`, `shared.get("search_count", 0)`
+  - **exec**: Query ChromaDB with embedding, top_k=5
   - **post**:
     - Write `shared["retrieved_docs"]`
-    - Compile context string into `shared["rag_context"]`
-    - Return `"docs_found"` if results exist, else `"no_docs"`
+    - Increment `shared["search_count"]`
+    - Return `"default"`
 
 ---
 
-#### 7. DecisionMakerNode (Agent)
+#### 5. DecisionMakerNode (Agent Node)
 
-- **Type**: Regular Node (Agent pattern)
-- **Purpose**: Route query to appropriate specialized agent
-- **Max Retries**: 3
-- **Wait**: 2 seconds
+- **Type**: Regular Node with Agent pattern
+- **Purpose**: Decide next action based on context
+- **Max Retries**: 2, Wait: 1 second
 - **Steps**:
-
-  - **prep**: Read `shared["user_query"]`, `shared["intent"]`, `shared["conversation_history"]`, `shared["retrieved_docs"]`, `shared["workflow_state"]`
+  - **prep**: Read query, intent, docs, search_count, conversation_history
   - **exec**:
-
-    - Call LLM with structured prompt:
-
-      ````yaml
-      ### CONTEXT
-      User Query: {user_query}
-      Intent: {intent}
-      Retrieved Docs: {doc_summaries}
-      Conversation History: {last_3_messages}
-      Current Workflow: {workflow_status}
-
-      ### AVAILABLE ACTIONS
-      [1] search_kb
-          Use when: Need more information from knowledge base
-
-      [2] answer
-          Use when: Have sufficient context to answer directly
-
-      [3] troubleshoot
-          Use when: User has technical problem requiring step-by-step guidance
-
-      [4] search_tickets
-          Use when: Need to check for existing tickets
-
-      [5] create_ticket
-          Use when: Issue cannot be resolved, needs IT support
-
-      [6] clarify
-          Use when: Query is ambiguous or needs more details
-
-      ### DECISION
-      Return your response in YAML:
-      ```yaml
-      thinking: |
-        <step-by-step reasoning>
-      action: <action_name>
-      reasoning: <why this action>
-      confidence: <0.0-1.0>
-      ````
-
-      ```
-
-      ```
-
+    - Call LLM with decision prompt
+    - Available actions: `search_kb`, `answer`, `clarify`, `troubleshoot`, `not_implemented`
     - Parse YAML response
-    - Validate action is in allowed set
-
-  - **post**: Write `shared["decision"]`, return action name (e.g., `"search_kb"`, `"answer"`, etc.)
+  - **post**:
+    - Write `shared["decision"]`
+    - Return decision as action (routes to appropriate node)
 
 ---
 
-#### 8. GenerateAnswerNode
+#### 6. GenerateAnswerNode
 
 - **Type**: Regular Node
-- **Purpose**: Generate final answer for user using RAG context
-- **Max Retries**: 3
-- **Wait**: 2 seconds
+- **Purpose**: Generate final answer using retrieved context
+- **Max Retries**: 2, Wait: 1 second
 - **Steps**:
-
-  - **prep**: Read `shared["user_query"]`, `shared["rag_context"]`, `shared["conversation_history"]`
-  - **exec**:
-
-    - Call LLM with prompt:
-
-      ```
-      You are an IT support assistant. Answer the user's question using the provided context.
-
-      Context from knowledge base:
-      {rag_context}
-
-      Conversation history:
-      {last_2_exchanges}
-
-      User question: {user_query}
-
-      Instructions:
-      - Be concise and helpful
-      - Only use information from the context
-      - If unsure, say so and offer to create a ticket
-      - DO NOT include sensitive information (passwords, keys, etc.)
-
-      Answer:
-      ```
-
-  - **post**: Write `shared["response"]["text"]`, return `"default"`
+  - **prep**: Read query, retrieved_docs, conversation_history, user_os, redaction_notice
+  - **exec**: Call LLM with answer generation prompt
+  - **post**: Write `shared["response"]`, return `"default"`
 
 ---
 
-#### 9. AskClarifyingQuestionNode
+#### 7. AskClarifyingQuestionNode
 
 - **Type**: Regular Node
 - **Purpose**: Ask user for more details when query is ambiguous
-- **Max Retries**: 2
+- **Max Retries**: 2, Wait: 1 second
 - **Steps**:
-  - **prep**: Read `shared["user_query"]`, `shared["intent"]`, `shared["conversation_history"]`
-  - **exec**:
-    - Call LLM to generate clarifying question
-    - Ensure question is specific and actionable
-  - **post**: Write `shared["response"]["text"]`, `shared["response"]["requires_followup"] = True`, return `"default"`
+  - **prep**: Read query, intent, retrieved_docs, conversation_history
+  - **exec**: Call LLM to generate clarifying question
+  - **post**:
+    - Write `shared["response"]`
+    - Set `shared["is_clarifying"] = True`
+    - Return `"default"`
 
 ---
 
-#### 10. LoadTroubleshootingWorkflowNode
+#### 8. InteractiveTroubleshootNode
 
 - **Type**: Regular Node
-- **Purpose**: Load appropriate troubleshooting workflow based on issue
+- **Purpose**: Guide user through troubleshooting steps
+- **Max Retries**: 2, Wait: 1 second
 - **Steps**:
-  - **prep**: Read `shared["user_query"]`, `shared["intent"]`, `shared["retrieved_docs"]`
+  - **prep**: Read query, docs, conversation_history, workflow_state from memory
   - **exec**:
-    - Extract workflow from retrieved docs or predefined workflows
-    - Parse into structured steps
-    - Return workflow dict
-  - **post**: Write `shared["workflow_state"]`, also update conversation memory, return `"default"`
+    - Generate troubleshooting steps if new
+    - Advance steps based on user feedback
+    - Call LLM to format response
+  - **post**:
+    - Write `shared["response"]`
+    - Update `shared["troubleshoot_state"]`
+    - Set `shared["needs_input"] = True`
+    - Return `"default"`
 
 ---
 
-#### 11. InteractiveTroubleshootingNode
-
-- **Type**: Async Node (waits for user feedback)
-- **Purpose**: Guide user through troubleshooting steps interactively
-- **Steps**:
-  - **prep_async**: Read `shared["workflow_state"]`
-  - **exec_async**:
-    - Get current step from workflow_state
-    - Present step to user
-    - Wait for user feedback (async)
-    - Evaluate if step resolved issue
-    - Determine next step or completion
-  - **post_async**:
-    - Update `shared["workflow_state"]`
-    - Update conversation memory
-    - Return `"resolved"` if issue fixed, `"next_step"` to continue, `"escalate"` if stuck
-
----
-
-#### 12. SearchJiraTicketsNode
+#### 9. FormatFinalResponseNode
 
 - **Type**: Regular Node
-- **Purpose**: Search for similar existing tickets
-- **Max Retries**: 2
+- **Purpose**: Format response with metadata for API output
 - **Steps**:
-  - **prep**: Read `shared["user_query"]`, `shared["query_embedding"]`, `shared["keywords"]`
-  - **exec**:
-    - Build JQL query from keywords
-    - Search Jira for open tickets
-    - Compute similarity scores using embeddings
-    - Return top matches
-  - **post**: Write `shared["similar_tickets"]`, return `"tickets_found"` or `"no_tickets"`
+  - **prep**: Read response, is_clarifying, needs_input, had_sensitive_data
+  - **exec**: Compile response object with all flags
+  - **post**: Write final `shared["response"]`, return `"default"`
 
 ---
 
-#### 13. CreateTicketNode
+#### 10. NotImplementedNode
 
 - **Type**: Regular Node
-- **Purpose**: Create new Jira ticket with collected context
-- **Max Retries**: 3
-- **Wait**: 2 seconds
+- **Purpose**: Placeholder for unimplemented features (ticket creation, Jira integration)
 - **Steps**:
-  - **prep**: Read `shared["user_query"]`, `shared["conversation_history"]`, `shared["workflow_state"]`, `shared["retrieved_docs"]`
-  - **exec**:
-    - Compile ticket description from conversation context
-    - Extract relevant logs (if any)
-    - Call redactor utility to remove sensitive info
-    - Call Jira API to create ticket
-    - Return ticket info
-  - **post**: Write `shared["ticket_created"]`, return `"default"`
+  - **prep**: Read query
+  - **exec**: Return message indicating feature is not available
+  - **post**: Write `shared["response"]`, return `"default"`
 
 ---
 
-#### 14. UpdateTicketNode
+#### 11. StatusQueryNode (NEW)
+
+- **Type**: AsyncNode
+- **Purpose**: Check company network status page for ongoing incidents
+- **Steps**:
+  - **prep_async**: Read `shared["user_query"]`
+  - **exec_async**: Call `scrape_session()` with Playwright
+  - **post_async**: Write `shared["status_results"]`, return `"default"`
+
+---
+
+### Indexing Flow Nodes
+
+#### 12. LoadDocumentsNode
 
 - **Type**: Regular Node
-- **Purpose**: Update existing ticket with additional context
-- **Max Retries**: 3
+- **Purpose**: Load documents from source directory
 - **Steps**:
-  - **prep**: Read `shared["similar_tickets"][0]`, `shared["conversation_history"]`, `shared["user_id"]`
+  - **prep**: Read `shared["source_dir"]`, `shared.get("source_file")`
   - **exec**:
-    - Format additional context
-    - Redact sensitive information
-    - Call Jira API to add comment and attach logs
-  - **post**: Write `shared["ticket_created"]`, return `"default"`
+    - Parse files using `document_parser.py`
+    - Handle PDF and HTML formats
+  - **post**: Write `shared["documents"]`, return `"default"`
 
 ---
 
-#### 15. FormatFinalResponseNode
+#### 13. ChunkDocumentsNode
+
+- **Type**: BatchNode
+- **Purpose**: Split documents into semantic chunks
+- **Steps**:
+  - **prep**: Return list from `shared["documents"]`
+  - **exec(doc)**: Call `chunk_text(doc["text"])` for each document
+  - **post**: Write `shared["chunks"]` (flattened list), return `"default"`
+
+---
+
+#### 14. EmbedDocumentsNode
+
+- **Type**: BatchNode
+- **Purpose**: Generate embeddings for all chunks
+- **Steps**:
+  - **prep**: Return `shared["chunks"]`
+  - **exec(chunk)**: Call `get_embedding(chunk)` for each chunk
+  - **post**: Write `shared["embeddings"]`, return `"default"`
+
+---
+
+#### 15. StoreInChromaDBNode
 
 - **Type**: Regular Node
-- **Purpose**: Format final response with action summary
+- **Purpose**: Store embedded chunks in ChromaDB
 - **Steps**:
-  - **prep**: Read `shared["response"]`, `shared["ticket_created"]`, `shared["workflow_state"]`
-  - **exec**:
-    - Call LLM to format user-friendly response
-    - Include ticket ID if created
-    - Summarize actions taken
-  - **post**: Write `shared["response"]["text"]`, return `"default"`
-
----
-
-### Batch/Async Considerations
-
-- **InteractiveTroubleshootingNode** uses `AsyncNode` to wait for user feedback between steps
-- Document ingestion (offline) uses `BatchNode` to process multiple files in parallel
-- Ticket search can use `ParallelBatchNode` if searching across multiple systems
+  - **prep**: Read chunks, embeddings, metadata from shared
+  - **exec**: Call `insert_documents()` from `chromadb_client.py`
+  - **post**: Write `shared["index_result"]`, return `"default"`
 
 ---
 
 ## 6. Implementation Plan
 
-### Phase 1: Foundation
+### Phase 1: Foundation ✅ COMPLETE
 
-- ✅ Set up Docker Compose environment
-- ✅ Implement core utilities: LLM wrapper, embeddings, intent classifier, conversation memory
-- ⚠️ Implement ChromaDB client utility
-- ⚠️ Implement document chunker
-- ⚠️ Build offline indexing flow: `LoadDocuments → ChunkDocuments → EmbedChunks → StoreInChromaDB`
-- ⚠️ Test with sample IT documentation
+- ✅ Set up Docker Compose environment (FastAPI, ChromaDB, Langfuse)
+- ✅ Implement core utilities: LLM wrapper (Groq), embeddings (sentence-transformers), intent classifier
+- ✅ Implement conversation memory with session management
+- ✅ Implement ChromaDB client utility (server and persistent modes)
+- ✅ Implement semantic document chunker (spaCy-based)
+- ✅ Implement document parser (PDF and HTML)
+- ✅ Build offline indexing flow: `LoadDocuments → ChunkDocuments → EmbedChunks → StoreInChromaDB`
+- ✅ Test with IT documentation from Confluence exports
 
-### Phase 2: Basic RAG
+### Phase 2: Basic RAG ✅ COMPLETE
 
-- ⚠️ Implement `IntentClassificationNode`
-- ⚠️ Implement `EmbedQueryNode`
-- ⚠️ Implement `SearchKnowledgeBaseNode`
-- ⚠️ Implement `GenerateAnswerNode`
-- ⚠️ Build simple Q&A flow: `IntentClassification → EmbedQuery → SearchKB → GenerateAnswer`
-- ⚠️ Test with factual IT queries
+- ✅ Implement `IntentClassificationNode` (rule-based with factual/troubleshooting/navigation)
+- ✅ Implement `EmbedQueryNode` (with retry logic)
+- ✅ Implement `SearchKnowledgeBaseNode` (ChromaDB cosine similarity)
+- ✅ Implement `GenerateAnswerNode` (with context from RAG)
+- ✅ Build simple Q&A flow: `SimpleQueryFlow` for testing
+- ✅ Test with factual IT queries
 
-### Phase 3: Agentic Routing
+### Phase 3: Agentic Routing ✅ COMPLETE
 
-- ⚠️ Implement `DecisionMakerNode` (agent pattern)
-- ⚠️ Implement `AskClarifyingQuestionNode`
-- ⚠️ Build branching flow with decision routing
-- ⚠️ Test multi-turn conversations
+- ✅ Implement `DecisionMakerNode` (agent pattern with action routing)
+- ✅ Implement `AskClarifyingQuestionNode`
+- ✅ Implement `InteractiveTroubleshootNode` (workflow state management)
+- ✅ Implement `FormatFinalResponseNode`
+- ✅ Build main `QueryFlow` with decision routing (agent loop)
+- ✅ Test multi-turn conversations with session management
 
-### Phase 4: Jira Integration
+### Phase 4: Security & Observability ✅ COMPLETE
 
-- ⚠️ Implement Jira client utility
-- ⚠️ Implement redactor utility
-- ⚠️ Implement `CheckMajorIncidentNode`
-- ⚠️ Implement `SearchJiraTicketsNode`
-- ⚠️ Implement `CreateTicketNode` and `UpdateTicketNode`
+- ✅ Implement redactor utility (pattern-based sensitive data removal)
+- ✅ Implement `RedactInputNode` at flow entry
+- ✅ Add Langfuse tracing with `@trace_flow` decorator
+- ✅ Add logging throughout nodes
+- ✅ Test redaction and tracing end-to-end
+
+### Phase 5: Status & Upload Features ✅ COMPLETE
+
+- ✅ Implement `StatusQueryNode` (async with Playwright)
+- ✅ Implement `NetworkStatusFlow` for status page checking
+- ✅ Implement file upload endpoint with PDF/HTML parsing
+- ✅ Implement document re-indexing and deletion
+- ✅ Test file upload and status checking
+
+### Phase 6: Jira Integration ⚠️ PLANNED
+
+- ⚠️ Implement Jira client utility (`utils/jira_client.py`)
+- ⚠️ Implement ticket search node
+- ⚠️ Implement ticket creation node
+- ⚠️ Implement major incident detection
+- ⚠️ Replace `NotImplementedNode` with actual ticket functionality
 - ⚠️ Test ticket operations end-to-end
-
-### Phase 5: Interactive Troubleshooting
-
-- ⚠️ Implement `LoadTroubleshootingWorkflowNode`
-- ⚠️ Implement `InteractiveTroubleshootingNode` (async)
-- ⚠️ Build troubleshooting sub-flow with user feedback loops
-- ⚠️ Test guided workflows
 
 ---
 
@@ -772,12 +694,92 @@ All nodes follow the pattern: **Read in `prep()` → Process in `exec()` → Wri
 
 ### Initial Evaluation
 
-- **Human Intuition**: Test with 20-30 real employee queries
+- **Human Intuition**: Test with real employee queries
 - **Metrics to Track**:
   - Query routing accuracy (intent classification)
   - RAG retrieval quality (relevance of top-k docs)
   - Answer quality (factual accuracy, helpfulness)
-  - Ticket creation accuracy (proper formatting, redaction)
+  - Response latency per node
+
+### RAG Improvements (Implemented)
+
+Based on the article "Practical Improvements for RAG Systems", the following six optimizations have been implemented:
+
+#### 1. Reranking (Cross-Encoder)
+
+- **File**: `utils/reranker.py`
+- **Purpose**: Re-scores top candidates using a cross-encoder for higher precision
+- **Model**: `cross-encoder/ms-marco-MiniLM-L-6-v2` (configurable)
+- **Config**: `RERANKER_ENABLED=true`, `RERANKER_MODEL`
+
+#### 2. Hybrid Search (BM25 + Vector)
+
+- **File**: `utils/hybrid_search.py`
+- **Purpose**: Combines BM25 keyword search with vector similarity using RRF fusion
+- **Benefit**: Better recall for keyword-heavy queries
+- **Config**: `HYBRID_SEARCH_ENABLED=true`, `HYBRID_VECTOR_WEIGHT`, `HYBRID_BM25_WEIGHT`
+
+#### 3. MMR Diversity (Maximal Marginal Relevance)
+
+- **File**: `utils/mmr.py`
+- **Purpose**: Reduces redundancy by selecting diverse documents
+- **Config**: `MMR_ENABLED=true`, `MMR_LAMBDA=0.7` (1.0 = relevance, 0.0 = diversity)
+
+#### 4. Query Expansion
+
+- **File**: `utils/query_expansion.py`
+- **Purpose**: Uses LLM to generate alternative phrasings for better recall
+- **Features**: Standard expansion, HyDE (Hypothetical Document Embeddings)
+- **Config**: `QUERY_EXPANSION_ENABLED=false`, `HYDE_ENABLED=false`
+- **Warning**: Adds LLM latency per query
+
+#### 5. Metadata Filtering
+
+- **File**: `utils/metadata_filter.py`
+- **Purpose**: Pre-filters documents by category/type based on query analysis
+- **Features**: Auto-detects category, doc type, recency from query
+- **Config**: `METADATA_FILTER_ENABLED=true`, `METADATA_FILTER_MIN_CONFIDENCE=0.7`
+
+#### 6. Feedback Loop
+
+- **File**: `utils/feedback.py`
+- **Purpose**: Collects user feedback AND adjusts retrieval scores based on feedback history
+- **Endpoints**: `POST /feedback`, `GET /feedback/stats`
+- **Storage**: JSONL file at `logs/feedback.jsonl`
+- **Config**: `FEEDBACK_ENABLED=true`, `FEEDBACK_ADJUSTMENT_ENABLED=true`, `FEEDBACK_STORAGE_PATH`
+
+**Feedback-Aware Retrieval**:
+
+- Documents with >60% positive feedback are boosted up to +0.15
+- Documents with >50% negative feedback are penalized up to -0.2
+- Minimum 3 feedback entries required before adjustments apply
+- Adjustments are cached for 5 minutes to avoid repeated file reads
+- Applied after reranking, before final result selection
+
+### Search Pipeline Order
+
+The search pipeline applies improvements in this order:
+
+1. **Metadata Filter** → Pre-filter by category/type (reduces search space)
+2. **Vector Search** → Initial retrieval from ChromaDB
+3. **Hybrid Search** → Merge with BM25 results via RRF
+4. **MMR Diversity** → Remove redundant documents
+5. **Reranking** → Re-score with cross-encoder for precision
+6. **Feedback Adjustment** → Boost/penalize based on user feedback history
+
+```
+Query → [Query Expansion] → Embed → [Metadata Filter] → Vector Search
+                                          ↓
+                                    [Hybrid BM25+RRF]
+                                          ↓
+                                    [MMR Diversity]
+                                          ↓
+                                     [Reranking]
+                                          ↓
+                                  [Feedback Adjustment]
+                                          ↓
+                                    Top-K Results
+```
 
 ### Flow-Level Optimizations
 
@@ -845,66 +847,48 @@ All nodes follow the pattern: **Read in `prep()` → Process in `exec()` → Wri
    ```python
    def exec_fallback(self, prep_res, exc):
        logging.error(f"Node failed after retries: {exc}")
-       return {
-           "action": "clarify",
-           "reasoning": "System error, asking user for more details",
-           "confidence": 0.3
-       }
+       return "I'm having trouble processing that. Could you rephrase your question?"
    ```
 
 ### Testing Strategy
 
-1. **Unit Tests** (pytest):
+Implemented tests in `tests/` directory:
 
-   - Test each utility function independently
-   - Mock external dependencies (Groq API, ChromaDB, Jira)
-   - Test edge cases (empty queries, malformed responses)
+1. **Node Tests** (pytest):
 
-2. **Integration Tests**:
+   - `test_batch_node.py` - BatchNode functionality
+   - `test_async_batch_node.py` - AsyncBatchNode
+   - `test_async_parallel_batch_node.py` - Parallel batch processing
 
-   - Test complete flows with mock data
-   - Verify shared store updates correctly
-   - Test branching and loops
+2. **Flow Tests**:
 
-3. **End-to-End Tests**:
+   - `test_flow_basic.py` - Basic flow execution
+   - `test_flow_composition.py` - Nested flows
+   - `test_async_flow.py` - AsyncFlow functionality
 
-   - Use real IT queries from employees
-   - Verify actual Jira ticket creation (in test project)
-   - Test conversation memory across sessions
+3. **Framework Tests**:
+   - `test_fall_back.py` - Fallback mechanism
+   - `test_tracing.py` - Langfuse integration
 
-4. **Security Tests**:
-   - Verify redactor catches all sensitive patterns
-   - Test prompt injection attempts
-   - Audit logs for leaked credentials
+### Langfuse Observability
 
-### Logging & Observability
+All flows use `@trace_flow` decorator for tracing:
 
-1. **Structured Logging**:
+```python
+from langfuse_tracing import trace_flow
 
-   ```python
-   import logging
+@trace_flow
+def create_query_flow():
+    # Flow is automatically traced
+    ...
+```
 
-   logging.info("Node execution", extra={
-       "node": "DecisionMakerNode",
-       "session_id": shared["session_id"],
-       "action": decision["action"],
-       "confidence": decision["confidence"],
-       "latency_ms": 1234
-   })
-   ```
+Provides:
 
-2. **Metrics to Track**:
-
-   - Query latency per node
-   - Retry counts and failure rates
-   - RAG retrieval scores distribution
-   - Ticket creation success rate
-   - User satisfaction signals
-
-3. **Visualization** (future):
-   - Flow execution graphs
-   - Conversation history browser
-   - RAG retrieval quality dashboard
+- End-to-end request tracing
+- Node execution timing
+- LLM call monitoring
+- Error tracking
 
 ---
 
@@ -920,73 +904,64 @@ services:
     - Stores document embeddings
     - Port: 8001 (mapped from internal 8000)
 
+  langfuse-server:
+    - Observability platform
+    - Trace storage and visualization
+    - Port: 3000
+
   chatbot:
     - FastAPI + Uvicorn server
-    - Orchestration engine
+    - Node orchestration engine
     - Groq API client for LLM calls
     - Local embedding generation
     - Port: 8000
-    - Depends on: chromadb
+    - Depends on: chromadb, langfuse-server
 ```
 
 ### Environment Configuration
 
-See `.env` file for complete configuration:
+**Key Settings** (from `.env`):
 
-**Key Settings**:
-
-- **LLM**: Groq API with llama-3.3-70b-versatile
-- **Embeddings**: sentence-transformers/all-MiniLM-L6-v2 (local, CPU)
-- **ChromaDB**: Server mode, host=chromadb:8000
-- **RAG**: top_k=3, min_score=0.7, max_context_tokens=2000
-- **Agent**: max_turns=5, confidence thresholds for auto-escalation
+- **LLM**: `GROQ_API_KEY`, `GROQ_MODEL=llama-3.3-70b-versatile`
+- **Embeddings**: `EMBED_MODEL=sentence-transformers/all-MiniLM-L6-v2` (local)
+- **ChromaDB**: `CHROMADB_MODE=server`, `CHROMADB_HOST=chromadb:8000`
+- **RAG**: `RAG_TOP_K=5`, `RAG_MIN_SCORE=0.0`
+- **Agent**: `MAX_SEARCH_KB_ITERATIONS=3`
+- **Langfuse**: `LANGFUSE_HOST`, `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`
 
 ### Security Considerations
 
-1. **API Keys**: Stored in `.env`, never logged or sent to LLM
-2. **Sensitive Data**: Redacted before any external API call
+1. **API Keys**: Stored in `.env`, never logged
+2. **Sensitive Data**: Redacted by `RedactInputNode` before processing
 3. **Local Embeddings**: No document content sent to external services
-4. **CORS**: Restricted to localhost origins in development
-5. **Jira Credentials**: Service account with minimal permissions
-
-### Scaling Considerations
-
-1. **Horizontal Scaling**:
-
-   - Run multiple chatbot containers behind load balancer
-   - Shared ChromaDB instance (or use replicas)
-   - Conversation memory → Redis for multi-instance support
-
-2. **Vertical Scaling**:
-
-   - Increase embedding batch size for faster indexing
-   - Use GPU for embedding generation if available
-   - Optimize ChromaDB index settings for larger datasets
-
-3. **Performance Targets**:
-   - Factual query: < 3 seconds end-to-end
-   - RAG query: < 5 seconds (including retrieval)
-   - Ticket creation: < 10 seconds (including Jira API)
+4. **CORS**: Configured for frontend origins
+5. **Session Cleanup**: Automatic cleanup of stale sessions
 
 ---
 
 ## 10. Future Enhancements
 
-### Phase 2 Features (Post-MVP)
+### Immediate Priorities
 
-1. **Multi-Language Support**: Detect language and route to appropriate knowledge base
-2. **Proactive Notifications**: Alert users about known issues before they ask
-3. **Analytics Dashboard**: Track most common issues, resolution rates, user satisfaction
-4. **Fine-Tuned Models**: Train domain-specific embeddings on IT documentation
-5. **Human-in-the-Loop**: Route uncertain responses to human agents for review
-6. **Feedback Loop**: Collect user feedback to improve RAG retrieval and responses
+1. **Jira Integration**: Implement ticket search and creation
+2. **Major Incident Detection**: Check for known issues before troubleshooting
+3. **Better Chunking**: Improve semantic chunking for complex documents
+
+### Phase 2 Features
+
+1. **Multi-Language Support**: Detect language and route appropriately
+2. **Proactive Notifications**: Alert users about known issues
+3. **Analytics Dashboard**: Track common issues and resolution rates
+4. **Fine-Tuned Embeddings**: Train on IT documentation corpus
+5. **Human-in-the-Loop**: Route uncertain responses for review
+6. **Feedback Collection**: Improve responses based on user ratings
 
 ### Advanced Capabilities
 
-1. **Multi-Modal Support**: Process screenshots, error messages from images
-2. **Code Execution**: Run diagnostic scripts on user's behalf (sandboxed)
-3. **Automated Resolution**: Execute simple fixes (password reset, cache clear) with user consent
-4. **Integration Hub**: Connect to more IT systems (Active Directory, ServiceNow, Teams)
+1. **Multi-Modal Support**: Process screenshots and error images
+2. **Automated Resolution**: Execute simple fixes with consent
+3. **Integration Hub**: Connect to AD, ServiceNow, Teams
+4. **Code Execution**: Run diagnostic scripts (sandboxed)
 
 ---
 
@@ -994,37 +969,47 @@ See `.env` file for complete configuration:
 
 ```
 agentic_it/
-├── main.py                          # FastAPI entry point
-├── nodes.py                         # All node definitions
-├── flows.py                         # Flow orchestration
+├── main.py                          # FastAPI entry point (endpoints, lifespan)
+├── nodes.py                         # All node definitions (14 nodes)
+├── flows.py                         # Flow orchestration (4 flows)
+├── models.py                        # Pydantic request/response models
 ├── requirements.txt                 # Python dependencies
-├── models.py                        #
 ├── Dockerfile                       # Container image definition
 ├── docker-compose.yml               # Multi-container orchestration
-├── .env                            # Environment configuration
+├── cremedelacreme/                  # Node/Flow framework
+│   ├── __init__.py                 # Core abstractions
+│   └── __init__.pyi                # Type stubs
+├── langfuse_tracing/               # Tracing utilities
+│   ├── __init__.py
+│   ├── core.py                     # Core tracing logic
+│   ├── decorator.py                # @trace_flow decorator
+│   └── config.py                   # Langfuse configuration
 ├── docs/
 │   └── design.md                   # This document
 ├── utils/
-│   ├── call_llm_groq.py           # LLM wrapper
+│   ├── call_llm_groq.py           # LLM wrapper (Groq)
 │   ├── embedding_local.py         # Local embedding generation
-│   ├── intent_classifier.py       # Intent classification
+│   ├── intent_classifier.py       # Rule-based intent classification
 │   ├── conversation_memory.py     # Session management
 │   ├── chromadb_client.py         # Vector DB interface
-│   ├── chunker.py                 # Document chunking
-│   ├── jira_client.py             # Ticket operations
+│   ├── chunker.py                 # Semantic document chunking
 │   ├── redactor.py                # Sensitive data removal
-│   └── document_loader.py         # Load docs from various formats
+│   ├── document_parser.py         # PDF/HTML parsing
+│   └── status_retrieval.py        # Status page scraping
 ├── data/
-│   └── docs/                       # IT documentation source files
+│   ├── docs/                       # IT documentation (HTML from Confluence)
+│   └── uploads/                    # Uploaded documents
 ├── logs/
-│   └── app.log                     # Application logs
+│   └── chatbot_*.log              # Application logs
 ├── tests/
-│   ├── test_nodes.py              # Node unit tests
-│   ├── test_flows.py              # Flow integration tests
-│   ├── test_utilities.py          # Utility function tests
-│   └── test_e2e.py                # End-to-end tests
+│   ├── test_batch_node.py         # BatchNode tests
+│   ├── test_async_flow.py         # AsyncFlow tests
+│   ├── test_flow_basic.py         # Basic flow tests
+│   └── test_tracing.py            # Langfuse tracing tests
+├── frontend/                       # Next.js chat UI
+│   ├── app/
+│   └── package.json
 └── chroma_data/                    # ChromaDB persistent storage
-    └── chroma.sqlite3
 ```
 
 ---
@@ -1035,54 +1020,61 @@ agentic_it/
 
 ```
 User: What is our VPN connection procedure?
-Bot: [Intent: factual] → [Search KB] → [Generate Answer]
+Flow: [RedactInput] → [IntentClassify] → [EmbedQuery] → [SearchKB] → [DecisionMaker: answer] → [GenerateAnswer]
 Bot: To connect to the VPN:
      1. Open Cisco AnyConnect
      2. Enter vpn.company.com
      3. Use your AD credentials
      4. Approve MFA request
 
-     Full guide: [link to doc]
+     Source: AnyConnect How-to-setup documentation
 ```
 
 ### Example 2: Troubleshooting
 
 ```
 User: My printer won't print
-Bot: [Intent: troubleshooting] → [Load Workflow] → [Interactive Steps]
+Flow: [DecisionMaker: troubleshoot] → [InteractiveTroubleshoot]
 Bot: Let's troubleshoot this together. First, is the printer showing any error lights?
 User: Yes, orange light blinking
 Bot: That indicates a paper jam. Can you open the paper tray and check?
 User: Found it, removed the paper
 Bot: Great! Try printing a test page now.
 User: It works!
-Bot: Excellent! Issue resolved. [Marked as resolved, no ticket created]
+Bot: Excellent! Issue resolved.
 ```
 
-### Example 3: Major Incident
+### Example 3: Network Status Check
 
 ```
-User: I can't access SharePoint
-Bot: [Check Major Incidents]
-Bot: This is a known issue affecting 47+ employees. Our IT team is actively
-     working on it (Ticket: ITSUP-1234, Priority: High, ETA: 2 hours).
-     I've added you to the notification list.
-[Bot updates ticket: +1 affected user]
+User: Is there an outage?
+Flow: [NetworkStatusFlow] → [StatusQueryNode (async)]
+Bot: Current network status:
+     ⚠️ SharePoint: Degraded performance (investigating)
+     ✅ VPN: Operational
+     ✅ Email: Operational
 ```
 
-### Example 4: Ticket Creation
+### Example 4: Clarification Needed
 
 ```
-User: My laptop is overheating and shutting down randomly
-Bot: [Troubleshoot] → [No resolution] → [Create Ticket]
-Bot: I've tried several troubleshooting steps but this requires hardware inspection.
-     I've created ticket ITSUP-5678 with the following details:
+User: It's not working
+Flow: [DecisionMaker: clarify] → [AskClarifyingQuestion]
+Bot: I'd like to help! Could you tell me:
+     - What application or service isn't working?
+     - What error message do you see?
+     - When did this start happening?
+```
 
-     Title: Laptop overheating and random shutdowns
-     Description: [conversation summary + collected info]
-     Logs: [system temps, error logs - redacted]
+### Example 5: Sensitive Data Redaction
 
-     An IT technician will contact you within 4 hours.
+```
+User: My password abc123 doesn't work for VPN
+Flow: [RedactInput] → ...
+Bot: ⚠️ Note: Sensitive information was removed from your message for security.
+
+     Let's help with your VPN login issue. Are you using your Active Directory
+     credentials? If so, try resetting your password at password.company.com
 ```
 
 ---
@@ -1094,75 +1086,55 @@ Bot: I've tried several troubleshooting steps but this requires hardware inspect
 ````yaml
 ### CONTEXT
 User Query: "{user_query}"
-Intent Classification: {intent} (confidence: {confidence})
-Conversation Turn: {turn_count}
+Intent Classification: {intent}
+Search Count: {search_count}/3
 
 Retrieved Documents:
 {doc_summaries}
 
-Conversation History (last 3 messages):
+Conversation History:
 {conversation_history}
-
-Current Workflow State: {workflow_status or "None"}
-
-### YOUR ROLE
-You are the decision-making component of an IT support chatbot. Your job is to
-analyze the context and decide the next action to help the employee efficiently.
 
 ### AVAILABLE ACTIONS
 [1] search_kb
-    Description: Search knowledge base for more information
-    When to use: Current retrieved docs insufficient or off-topic
+    When: Need more information from knowledge base (max 3 searches)
 
 [2] answer
-    Description: Provide direct answer using current context
-    When to use: Have sufficient context to answer confidently
+    When: Have sufficient context to answer directly
 
 [3] troubleshoot
-    Description: Start interactive troubleshooting workflow
-    When to use: User has technical problem requiring step-by-step guidance
+    When: User has technical problem requiring step-by-step guidance
 
-[4] search_tickets
-    Description: Search Jira for similar existing tickets
-    When to use: Problem seems unresolvable, check if others have same issue
+[4] clarify
+    When: Query is ambiguous or needs more details
 
-[5] create_ticket
-    Description: Create new Jira ticket for IT support
-    When to use: Cannot resolve issue, needs human intervention
-
-[6] clarify
-    Description: Ask user for more specific details
-    When to use: Query is ambiguous or missing critical information
+[5] not_implemented
+    When: User requests ticket creation or Jira-related features
 
 ### DECISION RULES
-- If confidence < 0.6 in understanding query → clarify
+- If search_count >= 3 and still no good docs → answer with what you have
 - If intent = factual + good docs found → answer
-- If intent = troubleshooting + no workflow started → troubleshoot
-- If in workflow + stuck → search_tickets
-- Never create ticket without attempting resolution first
-- Keep responses concise and actionable
+- If intent = troubleshooting → troubleshoot
+- If query is too vague → clarify
 
 ### OUTPUT FORMAT
 Respond in YAML:
 ```yaml
 thinking: |
-  <your step-by-step reasoning process>
+  <your step-by-step reasoning>
 action: <action_name>
-reasoning: <why you chose this action in one sentence>
-confidence: <0.0 to 1.0>
 ````
-
-Think carefully and make the best decision for the user.
 
 ```
 
 ### Answer Generation Prompt
+
 ```
 
 ### YOUR ROLE
 
-You are a helpful IT support assistant for [Company Name]. Provide accurate,
-concise answers based on official documentation.
+You are a helpful IT support assistant. Provide accurate, concise answers
+based on official documentation.
 
 ### CONTEXT FROM KNOWLEDGE BASE
 
@@ -1176,56 +1148,54 @@ concise answers based on official documentation.
 
 {user_query}
 
+### USER OPERATING SYSTEM
+
+{user_os or "Unknown"}
+
 ### INSTRUCTIONS
 
 1. Answer using ONLY information from the context above
 2. Be concise but complete - aim for 3-5 sentences
 3. Use bullet points for step-by-step instructions
-4. Include relevant links from metadata if available
-5. If context insufficient, say so and offer to create a ticket
-6. NEVER include sensitive information (passwords, keys, personal data)
-7. Be friendly and professional
+4. If context insufficient, acknowledge and provide general guidance
+5. Tailor instructions to user's OS if known
+6. Be friendly and professional
 
 ### YOUR ANSWER
 
 ```
 
-### Ticket Description Prompt
+### Troubleshooting Prompt
+
 ```
 
 ### YOUR ROLE
 
-Generate a well-formatted Jira ticket description from conversation context.
+Generate troubleshooting steps for an IT issue.
 
-### CONVERSATION SUMMARY
+### CONTEXT
 
-{conversation_summary}
+{retrieved_docs}
 
-### TROUBLESHOOTING STEPS ATTEMPTED
+### USER ISSUE
 
-{workflow_steps_completed}
-
-### ADDITIONAL CONTEXT
-
-- User ID: {user_id}
-- Query: {original_query}
-- Time: {timestamp}
+{user_query}
 
 ### INSTRUCTIONS
 
-Create a ticket description that includes:
+1. Generate 3-5 specific troubleshooting steps
+2. Order from simple to complex
+3. Make each step actionable and verifiable
+4. Include what to check after each step
 
-1. Problem statement (clear, concise)
-2. Steps already attempted
-3. Current state
-4. Relevant technical details (OS, software versions, error messages)
-5. User impact level
+### OUTPUT FORMAT (YAML)
 
-Format with Markdown for readability.
-DO NOT include any sensitive information (passwords, API keys, etc.) -
-these will be redacted separately.
-
-### TICKET DESCRIPTION
+```yaml
+steps:
+  - "Step 1: Check X and verify Y"
+  - "Step 2: Try doing Z"
+  - "Step 3: If still failing, check A"
+```
 
 ```
 
@@ -1235,8 +1205,7 @@ these will be redacted separately.
 
 ---
 
-**Version**: 1.0
-**Last Updated**: October 6, 2025
-**Author**: AI Assistant
-**Status**: Design Phase - Ready for Implementation Phase 1
+**Version**: 1.6
+**Last Updated**: Dec 1, 2025
+**Author**: Marcus Mitelea
 ```

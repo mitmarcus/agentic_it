@@ -3,13 +3,19 @@ import { useEffect, useRef } from "react";
 import type { Message } from "../../types/chat";
 import { MessageBubble } from "./MessageBubble";
 
+interface MessageListProps {
+  messages: Message[];
+  isLoading: boolean;
+  sessionId?: string;
+  onFeedback?: (messageId: string, feedbackType: "positive" | "negative") => void;
+}
+
 export function MessageList({
   messages,
   isLoading,
-}: {
-  messages: Message[];
-  isLoading: boolean;
-}) {
+  sessionId,
+  onFeedback,
+}: MessageListProps) {
   const endRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -19,7 +25,12 @@ export function MessageList({
   return (
     <div className="flex-1 overflow-y-auto px-8 py-6 flex flex-col gap-5 bg-white [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-track]:bg-gray-100 [&::-webkit-scrollbar-thumb]:bg-gray-400 [&::-webkit-scrollbar-thumb]:rounded [&::-webkit-scrollbar-thumb:hover]:bg-gray-500">
       {messages.map((m) => (
-        <MessageBubble key={m.id} message={m} />
+        <MessageBubble 
+          key={m.id} 
+          message={m} 
+          sessionId={sessionId}
+          onFeedback={onFeedback}
+        />
       ))}
       {isLoading && (
         <div className="flex justify-start animate-[fadeIn_0.3s_ease-in]">

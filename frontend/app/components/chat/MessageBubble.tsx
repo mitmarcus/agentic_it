@@ -1,32 +1,120 @@
 "use client";
+import { useState } from "react";
 import type { Message } from "../../types/chat";
 
 function getResponseTypeLabel(type?: string) {
   switch (type) {
     case "answer":
       return "💡 Answer";
-    case "workflow":
     case "clarify":
-      return "📋 Workflow";
-    case "link_docs":
+      return "❓ Clarification";
     case "search_kb":
       return "📚 Documentation";
+    case "troubleshoot":
+      return "🔧 Troubleshooting";
+    case "exit_troubleshoot":
+      return "✅ Resolved";
     case "escalate":
       return "🚨 Escalated";
+    case "create_ticket":
+      return "🎫 Create Ticket";
+    case "search_tickets":
+      return "🔍 Search Tickets";
+    case "not_implemented":
+      return "⚠️ Not Available";
     default:
-      return "";
+      return type ? `📋 ${type}` : "";
   }
 }
 
 function getConfidenceColor(confidence?: number) {
-  if (!confidence) return "#94a3b8";
-  if (confidence >= 0.8) return "#16a34a";
-  if (confidence >= 0.6) return "#f97316";
-  return "#dc2626";
+  if (confidence === undefined || confidence === null) return "#94a3b8";
+  if (confidence >= 0.8) return "#16a34a"; // green
+  if (confidence >= 0.6) return "#f97316"; // orange
+  return "#dc2626"; // red
 }
 
-export function MessageBubble({ message }: { message: Message }) {
+// Thumbs Up Icon
+function ThumbsUpIcon({ filled }: { filled?: boolean }) {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      width="16"
+      height="16"
+      viewBox="0 0 24 24"
+      fill={filled ? "currentColor" : "none"}
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3" />
+    </svg>
+  );
+}
+
+// Thumbs Down Icon
+function ThumbsDownIcon({ filled }: { filled?: boolean }) {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      width="16"
+      height="16"
+      viewBox="0 0 24 24"
+      fill={filled ? "currentColor" : "none"}
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M10 15v4a3 3 0 0 0 3 3l4-9V2H5.72a2 2 0 0 0-2 1.7l-1.38 9a2 2 0 0 0 2 2.3zm7-13h2.67A2.31 2.31 0 0 1 22 4v7a2.31 2.31 0 0 1-2.33 2H17" />
+    </svg>
+  );
+}
+
+interface MessageBubbleProps {
+  message: Message;
+  sessionId?: string;
+  onFeedback?: (
+    messageId: string,
+    feedbackType: "positive" | "negative"
+  ) => void;
+}
+
+export function MessageBubble({
+  message,
+  sessionId,
+  onFeedback,
+}: MessageBubbleProps) {
   const isUser = message.role === "user";
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [localFeedback, setLocalFeedback] = useState<
+    "positive" | "negative" | null
+  >(message.feedback || null);
+
+  const handleFeedback = async (feedbackType: "positive" | "negative") => {
+    if (isSubmitting || localFeedback) return;
+
+    setIsSubmitting(true);
+    setLocalFeedback(feedbackType);
+
+    try {
+      if (onFeedback) {
+        onFeedback(message.id, feedbackType);
+      }
+    } catch (error) {
+      console.error("Failed to submit feedback:", error);
+      setLocalFeedback(null);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const showFeedbackButtons =
+    message.role === "assistant" &&
+    message.responseType &&
+    sessionId &&
+    message.userQuery;
 
   return (
     <div
@@ -45,7 +133,7 @@ export function MessageBubble({ message }: { message: Message }) {
           {message.content}
         </div>
         {message.role === "assistant" && message.responseType && (
-          <div className="flex gap-3 mt-2.5 text-xs text-slate-600 flex-wrap">
+          <div className="flex gap-3 mt-2.5 text-xs text-slate-600 flex-wrap items-center">
             <span
               className={`font-semibold px-2.5 py-1 rounded-full ${
                 isUser
@@ -55,13 +143,84 @@ export function MessageBubble({ message }: { message: Message }) {
             >
               {getResponseTypeLabel(message.responseType)}
             </span>
-            {message.confidence !== undefined && (
-              <span
-                className="font-medium"
-                style={{ color: getConfidenceColor(message.confidence) }}
-              >
-                {(message.confidence * 100).toFixed(0)}% confidence
-              </span>
+            {/* Show both confidence values */}
+            {(message.intentConfidence !== undefined ||
+              message.decisionConfidence !== undefined) && (
+              <div className="flex items-center gap-2">
+                {message.intentConfidence !== undefined && (
+                  <span
+                    className="font-medium flex items-center gap-1"
+                    style={{
+                      color: getConfidenceColor(message.intentConfidence),
+                    }}
+                    title="Intent classification confidence"
+                  >
+                    <span
+                      className="inline-block w-2 h-2 rounded-full"
+                      style={{
+                        backgroundColor: getConfidenceColor(
+                          message.intentConfidence
+                        ),
+                      }}
+                    />
+                    {message.intentType
+                      ? `${message.intentType}: `
+                      : "Intent: "}
+                    {(message.intentConfidence * 100).toFixed(0)}%
+                  </span>
+                )}
+                {message.decisionConfidence !== undefined && (
+                  <span
+                    className="font-medium flex items-center gap-1"
+                    style={{
+                      color: getConfidenceColor(message.decisionConfidence),
+                    }}
+                    title="Answer/decision confidence based on retrieved data"
+                  >
+                    <span
+                      className="inline-block w-2 h-2 rounded-full"
+                      style={{
+                        backgroundColor: getConfidenceColor(
+                          message.decisionConfidence
+                        ),
+                      }}
+                    />
+                    Answer: {(message.decisionConfidence * 100).toFixed(0)}%
+                  </span>
+                )}
+              </div>
+            )}
+
+            {/* Feedback Buttons */}
+            {showFeedbackButtons && (
+              <div className="flex items-center gap-1 ml-auto">
+                {localFeedback ? (
+                  <span className="text-xs text-slate-500 italic">
+                    {localFeedback === "positive"
+                      ? "Thanks! 👍"
+                      : "Thanks for the feedback"}
+                  </span>
+                ) : (
+                  <>
+                    <button
+                      onClick={() => handleFeedback("positive")}
+                      disabled={isSubmitting}
+                      className="p-1.5 rounded-md hover:bg-green-100 text-slate-400 hover:text-green-600 transition-colors disabled:opacity-50"
+                      title="This was helpful"
+                    >
+                      <ThumbsUpIcon />
+                    </button>
+                    <button
+                      onClick={() => handleFeedback("negative")}
+                      disabled={isSubmitting}
+                      className="p-1.5 rounded-md hover:bg-red-100 text-slate-400 hover:text-red-600 transition-colors disabled:opacity-50"
+                      title="This wasn't helpful"
+                    >
+                      <ThumbsDownIcon />
+                    </button>
+                  </>
+                )}
+              </div>
             )}
           </div>
         )}

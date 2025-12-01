@@ -5,17 +5,29 @@ Stores workflow state, conversation history, and step tracking.
 import threading
 from typing import Dict, Any, List, Optional
 from datetime import datetime
+from collections import OrderedDict
 
 
 class ConversationMemory:
     """
     In-memory store for conversation sessions.
     Tracks workflow state and conversation history.
+    
+    Uses OrderedDict with LRU eviction to bound memory usage.
     """
     
+    # Maximum sessions to keep (LRU eviction)
+    MAX_SESSIONS = 1000
+    
     def __init__(self):
-        self._sessions: Dict[str, Dict[str, Any]] = {}
+        self._sessions: OrderedDict[str, Dict[str, Any]] = OrderedDict()
         self._lock = threading.Lock()
+    
+    def _evict_if_needed(self):
+        """Evict oldest sessions if we exceed MAX_SESSIONS (call while holding lock)."""
+        while len(self._sessions) > self.MAX_SESSIONS:
+            # Pop oldest (first) item
+            self._sessions.popitem(last=False)
     
     def get_session(self, session_id: str) -> Dict[str, Any]:
         """
@@ -29,6 +41,7 @@ class ConversationMemory:
         """
         with self._lock:
             if session_id not in self._sessions:
+                self._evict_if_needed()
                 self._sessions[session_id] = {
                     "session_id": session_id,
                     "created_at": datetime.now().isoformat(),
@@ -36,6 +49,9 @@ class ConversationMemory:
                     "conversation_history": [],
                     "workflow_state": None,
                 }
+            else:
+                # Move to end (most recently used) for LRU
+                self._sessions.move_to_end(session_id)
             
             # Update last activity
             self._sessions[session_id]["last_activity"] = datetime.now().isoformat()

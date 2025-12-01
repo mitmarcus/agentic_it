@@ -2,9 +2,9 @@ import asyncio
 from playwright.async_api import async_playwright
 from dotenv import load_dotenv
 import os
-import logging
+from utils.logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 async def autofill_sign_in(page, email: str, password: str):
     """
