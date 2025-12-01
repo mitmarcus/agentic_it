@@ -2,6 +2,10 @@
 This is the chatbot FastAPI service.
 """
 import os
+
+# Disable tokenizers' parallelism to avoid fork deadlock warnings
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
 import uuid
 import logging
 from datetime import datetime
