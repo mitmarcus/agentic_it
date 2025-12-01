@@ -7,7 +7,6 @@ import os
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 import uuid
-import logging
 from datetime import datetime
 from contextlib import asynccontextmanager
 
@@ -19,6 +18,7 @@ from typing import List
 # Import flows
 from flows import get_flow
 from utils.conversation_memory import conversation_memory
+from utils.logger import setup_logging, get_logger
 
 # Import models
 from models import (
@@ -33,6 +33,9 @@ from models import (
     SessionCleanupResponse,
     CollectionInfoResponse,
     DeleteDocumentResponse,
+    FeedbackRequest,
+    FeedbackResponse,
+    FeedbackStatsResponse,
 )
 
 # Load environment variables 
@@ -40,24 +43,8 @@ from models import (
 load_dotenv()
 
 # Configure logging
-log_level = os.getenv("LOG_LEVEL", "INFO")
-log_file_enabled = os.getenv("LOG_FILE_ENABLED", "true").lower() == "true"
-log_file_path = os.getenv("LOG_FILE_PATH", "./logs/app.log")
-
-# Create logs directory if it doesn't exist
-if log_file_enabled:
-    os.makedirs(os.path.dirname(log_file_path), exist_ok=True)
-
-logging.basicConfig(
-    level=log_level,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler(log_file_path) if log_file_enabled else logging.NullHandler()
-    ]
-)
-
-logger = logging.getLogger(__name__)
+setup_logging()
+logger = get_logger(__name__)
 
 
 # ============================================================================
@@ -77,13 +64,27 @@ async def lifespan(app: FastAPI):
     
     # Test ChromaDB connection
     try:
-        from utils.chromadb_client import initialize_client, get_collection_stats
+        from utils.chromadb_client import initialize_client, get_collection_stats, get_collection
         initialize_client()
         stats = get_collection_stats()
         logger.info(f"ChromaDB connected: {stats['count']} chunks indexed")
+        
+        # Initialize BM25 index for hybrid search
+        hybrid_enabled = os.getenv("HYBRID_SEARCH_ENABLED", "true").lower() == "true"
+        if hybrid_enabled and stats['count'] > 0:
+            from utils.hybrid_search import rebuild_bm25_from_chromadb
+            collection = get_collection()
+            if collection:
+                num_indexed = rebuild_bm25_from_chromadb(collection)
+                logger.info(f"BM25 index initialized: {num_indexed} documents")
+            else:
+                logger.warning("Could not get ChromaDB collection for BM25 indexing")
+        elif hybrid_enabled:
+            logger.info("BM25 index not built (no documents in ChromaDB yet)")
     except Exception as e:
         logger.warning(f"ChromaDB connection check failed: {e}")
         logger.warning("Indexing may be required. Use POST /index to index documents.")
+
     
     yield  # Application runs here
     
@@ -131,6 +132,71 @@ async def health_check():
         "timestamp": datetime.now().isoformat(),
         "version": "1.0.0"
     }
+
+
+# ============================================================================
+# Feedback Endpoints (Improvement #6)
+# ============================================================================
+
+@app.post("/feedback", response_model=FeedbackResponse)
+async def submit_feedback(request: FeedbackRequest):
+    """
+    Submit user feedback for a query-response pair.
+    
+    This endpoint collects feedback to improve the RAG system over time.
+    
+    Args:
+        request: Feedback request with session_id, query, response, and feedback type
+    
+    Returns:
+        Confirmation with feedback ID
+    """
+    from utils.feedback import record_feedback
+    
+    try:
+        # Convert doc IDs to the format expected by record_feedback
+        retrieved_docs = [{"id": doc_id} for doc_id in (request.retrieved_doc_ids or [])]
+        
+        feedback_id = record_feedback(
+            session_id=request.session_id,
+            query=request.query,
+            response=request.response,
+            feedback_type=request.feedback_type,
+            feedback_score=request.feedback_score,
+            feedback_comment=request.feedback_comment,
+            retrieved_docs=retrieved_docs
+        )
+        
+        return FeedbackResponse(
+            feedback_id=feedback_id,
+            message="Thank you for your feedback!",
+            timestamp=datetime.now().isoformat()
+        )
+    except Exception as e:
+        logger.error(f"Failed to record feedback: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to record feedback: {str(e)}")
+
+
+@app.get("/feedback/stats", response_model=FeedbackStatsResponse)
+async def get_feedback_stats():
+    """
+    Get feedback statistics.
+    
+    Returns aggregated feedback data for monitoring and analysis.
+    
+    Returns:
+        Feedback statistics including positive/negative counts and rates
+    """
+    from utils.feedback import get_feedback_store
+    
+    try:
+        store = get_feedback_store()
+        stats = store.get_feedback_stats()
+        
+        return FeedbackStatsResponse(**stats)
+    except Exception as e:
+        logger.error(f"Failed to get feedback stats: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get feedback stats: {str(e)}")
 
 
 @app.get("/collection/info", response_model=CollectionInfoResponse)
@@ -216,7 +282,7 @@ async def get_collection_info(
         # Apply pagination
         paginated_docs = documents[offset:offset + limit]
         
-        logger.info(f"Retrieved {len(documents)} unique documents (grouped from {total_count} chunks)")
+        logger.debug(f"Retrieved {len(documents)} unique documents (grouped from {total_count} chunks)")
         
         return {
             "collection_name": collection_name,
@@ -249,7 +315,7 @@ async def process_query(request: QueryRequest):
         user_id = request.user_id or "anonymous"
         user_os = request.user_os or "unknown"
         
-        logger.info(f"Processing query from session {session_id} {user_os}: {request.query[:100]}")
+        logger.debug(f"Processing query from session {session_id} {user_os}: {request.query[:100]}")
         
         # Add user message to conversation memory
         conversation_memory.add_message(session_id, "user", request.query)
@@ -274,7 +340,7 @@ async def process_query(request: QueryRequest):
         status_flow = get_flow("status")
         if turn_count == 1:
             result = await status_flow.run_async(shared)
-            logger.info(f"Initial status check completed for session {session_id}. Result: {result}")
+            logger.debug(f"Initial status check completed for session {session_id}. Result: {result}")
 
         
         # Get and run the query flow
@@ -291,17 +357,21 @@ async def process_query(request: QueryRequest):
         if shared.get("redaction_notice"):
             response_text = shared["redaction_notice"] + "\n\n" + response_text
         
-        # Prepare metadata
+        # Prepare metadata (include doc IDs for feedback tracking)
+        retrieved_docs = shared.get("retrieved_docs", [])
+        retrieved_doc_ids = [doc.get("id", "") for doc in retrieved_docs if doc.get("id")]
+        
         metadata = {
             "intent": shared.get("intent", {}),
-            "retrieved_docs_count": len(shared.get("retrieved_docs", [])),
+            "retrieved_docs_count": len(retrieved_docs),
+            "retrieved_doc_ids": retrieved_doc_ids,
             "decision": shared.get("decision", {}),
             "turn_count": turn_count
         }
         
         conversation_memory.add_message(session_id, "assistant", response_text)
         
-        logger.info(f"Query processed successfully. Action: {action_taken}")
+        logger.debug(f"Query processed successfully. Action: {action_taken}")
         
         return {
             "response": response_text,
@@ -451,7 +521,7 @@ async def upload_documents(files: List[UploadFile] = File(...)):
                     "size_bytes": file_size
                 })
                 
-                logger.info(f"Saved uploaded file: {file.filename} ({file_size} bytes)")
+                logger.debug(f"Saved uploaded file: {file.filename} ({file_size} bytes)")
                 
             except Exception as e:
                 failed_files.append({
@@ -471,7 +541,7 @@ async def upload_documents(files: List[UploadFile] = File(...)):
             }
         
         # Index the uploaded files
-        logger.info(f"Indexing {len(uploaded_files)} uploaded files from {temp_dir}")
+        logger.debug(f"Indexing {len(uploaded_files)} uploaded files from {temp_dir}")
         
         shared = {
             "source_dir": temp_dir
@@ -690,5 +760,5 @@ if __name__ == "__main__":
         host=host,
         port=port,
         reload=True,  # Enable auto-reload in development
-        log_level=log_level.lower()
+        log_level=os.getenv("LOG_LEVEL", "INFO").lower()
     )

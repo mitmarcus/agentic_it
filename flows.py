@@ -3,17 +3,18 @@ Flows for IT Support Chatbot.
 
 Flows orchestrate nodes into complete workflows.
 """
-import logging
 from langfuse_tracing import trace_flow, TracingConfig
+from utils.logger import get_logger
 
 from cremedelacreme import AsyncFlow, Flow
 from nodes import (
+    # Company laptop only nodes
+    StatusQueryNode,
     # Online query nodes
     RedactInputNode,
     IntentClassificationNode,
     EmbedQueryNode,
     SearchKnowledgeBaseNode,
-    StatusQueryNode,
     DecisionMakerNode,
     GenerateAnswerNode,
     AskClarifyingQuestionNode,
@@ -27,7 +28,7 @@ from nodes import (
     StoreInChromaDBNode,
 )
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # Initialize tracing configuration
 try:
@@ -233,30 +234,36 @@ def create_test_query_flow() -> Flow:
 # Flow Factory
 # ============================================================================
 
+_flow_cache: dict = {}
+
+
 def get_flow(flow_type: str = "query") -> Flow:
     """
-    Get a flow by type name.
+    Get a flow by type name. Flows are cached for efficiency.
     
     Args:
-        flow_type: One of "query", "indexing", "simple"
+        flow_type: One of "query", "indexing", "status", "test"
     
     Returns:
-        Flow instance
+        Flow instance (cached)
         
     Raises:
         ValueError: If flow_type is unknown
     """
-    flows = {
-        "status": create_network_status_flow,
-        "query": create_query_flow,
-        "indexing": create_indexing_flow,
-        "test": create_test_query_flow
-    }
+    if flow_type not in _flow_cache:
+        flows = {
+            "status": create_network_status_flow,
+            "query": create_query_flow,
+            "indexing": create_indexing_flow,
+            "test": create_test_query_flow
+        }
+        
+        if flow_type not in flows:
+            raise ValueError(f"Unknown flow type: {flow_type}. Available: {list(flows.keys())}")
+        
+        _flow_cache[flow_type] = flows[flow_type]()
     
-    if flow_type not in flows:
-        raise ValueError(f"Unknown flow type: {flow_type}. Available: {list(flows.keys())}")
-    
-    return flows[flow_type]()
+    return _flow_cache[flow_type]
 
 
 if __name__ == "__main__":

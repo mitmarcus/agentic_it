@@ -7,15 +7,11 @@ from pathlib import Path
 import spacy
 import numpy as np
 import json
-import logging
 
 from .embedding_local import get_embedding
-from dotenv import load_dotenv
+from .logger import get_logger
 
-load_dotenv()
-
-# Logging
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # Load spaCy lazily (avoid heavy import-time cost in some contexts).
 _NLP = None
