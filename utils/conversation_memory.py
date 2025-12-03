@@ -11,7 +11,7 @@ from collections import OrderedDict
 class ConversationMemory:
     """
     In-memory store for conversation sessions.
-    Tracks workflow state and conversation history.
+    Tracks workflow state, conversation history, and active topic.
     
     Uses OrderedDict with LRU eviction to bound memory usage.
     """
@@ -48,6 +48,7 @@ class ConversationMemory:
                     "last_activity": datetime.now().isoformat(),
                     "conversation_history": [],
                     "workflow_state": None,
+                    "active_topic": None,  # Track the current topic being discussed
                 }
             else:
                 # Move to end (most recently used) for LRU
@@ -57,6 +58,40 @@ class ConversationMemory:
             self._sessions[session_id]["last_activity"] = datetime.now().isoformat()
             
             return self._sessions[session_id]
+    
+    def set_active_topic(self, session_id: str, topic: str, keywords: Optional[List[str]] = None):
+        """
+        Set the active topic being discussed (e.g., "how to find MAC address").
+        
+        Args:
+            session_id: Session identifier
+            topic: The main topic/question being discussed
+            keywords: Key terms related to this topic
+        """
+        session = self.get_session(session_id)
+        session["active_topic"] = {
+            "topic": topic,
+            "keywords": keywords or [],
+            "set_at": datetime.now().isoformat()
+        }
+    
+    def get_active_topic(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Get the active topic being discussed.
+        
+        Args:
+            session_id: Session identifier
+            
+        Returns:
+            Active topic dict with 'topic' and 'keywords', or None
+        """
+        session = self.get_session(session_id)
+        return session.get("active_topic")
+    
+    def clear_active_topic(self, session_id: str):
+        """Clear the active topic (user switched topics)."""
+        session = self.get_session(session_id)
+        session["active_topic"] = None
     
     def add_message(self, session_id: str, role: str, content: str):
         """

@@ -141,19 +141,19 @@ class IntentClassificationNode(Node):
     
     def exec(self, query: str) -> Dict:
         """Classify intent using utility function."""
-        intent_result = classify_intent(query)
+        intent = classify_intent(query)
         keywords = extract_keywords(query)
         
-        logger.debug(f"Intent: {intent_result['intent']} (confidence: {intent_result['confidence']:.2f})")
+        logger.debug(f"Intent: {intent}")
         
         return {
-            "intent_data": intent_result,
+            "intent": intent,
             "keywords": keywords
         }
     
     def post(self, shared: Dict, prep_res: str, exec_res: Dict) -> str:
         """Write intent data to shared store."""
-        shared["intent"] = exec_res["intent_data"]
+        shared["intent"] = exec_res["intent"]
         shared["keywords"] = exec_res["keywords"]
         return "default"
 
@@ -163,30 +163,81 @@ class IntentClassificationNode(Node):
 # ============================================================================
 
 class EmbedQueryNode(Node):
-    """Generate embedding for user query with optional query expansion.
+    """Generate embedding for user query with follow-up detection and context enrichment.
 
+    - Detects follow-up queries and enriches them with active topic context
+    - Includes conversation context for better retrieval on follow-up questions
     - Can use LLM to generate alternative phrasings for better recall
     - Supports HyDE (Hypothetical Document Embeddings) for complex queries
     """
+    
+    # Follow-up indicators for local detection (no LLM needed)
+    FOLLOW_UP_INDICATORS = frozenset([
+        # OS mentions
+        "windows", "linux", "mac", "macos", "ubuntu", "debian", "fedora", "ios", "android",
+        # Confirmations  
+        "yes", "yeah", "yep", "correct", "right", "exactly",
+        # Negations
+        "no", "nope", "didnt work", "doesnt work", "still not working",
+        # Version/specifics
+        "version", "365", "2019", "2021", "2023", "chrome", "firefox", "edge", "safari",
+        # Continuation signals
+        "what about", "how about", "also", "instead", "other",
+    ])
+    
+    NEW_TOPIC_STARTERS = ("how to", "how do i", "what is", "where is", "who is", "can i", "why is", "when")
+    GREETINGS = frozenset(["hi", "hello", "hey", "thanks", "thank you", "bye", "goodbye"])
     
     def __init__(self):
         # Retry 3 times if embedding fails
         super().__init__(max_retries=3, wait=1)
     
     def prep(self, shared: Dict) -> Dict:
-        """Read user query and keywords."""
+        """Read user query, keywords, conversation context, and active topic."""
+        session_id = shared.get("session_id", "")
+        # Get recent conversation for context (last 2-3 exchanges)
+        history = conversation_memory.get_formatted_history(session_id, limit=4, exclude_last=True)
+        # Get active topic for follow-up detection
+        active_topic = conversation_memory.get_active_topic(session_id)
+        
         return {
             "query": shared.get("user_query", ""),
-            "keywords": shared.get("keywords", [])
+            "session_id": session_id,
+            "keywords": shared.get("keywords", []),
+            "conversation_context": history,
+            "active_topic": active_topic,
+            "turn_count": shared.get("turn_count", 1)
         }
     
     def exec(self, prep_data: Dict) -> Dict:
-        """Generate embedding vector, optionally with query expansion."""
+        """Generate embedding vector with follow-up detection and context enrichment."""
         query = prep_data["query"]
-        keywords = prep_data.get("keywords", [])
+        conversation_context = prep_data.get("conversation_context", "")
+        active_topic = prep_data.get("active_topic")
+        turn_count = prep_data.get("turn_count", 1)
         
         if not query:
             raise ValueError("Empty query for embedding")
+        
+        # Detect if this is a follow-up and enrich query accordingly
+        is_follow_up = False
+        query_with_context = query
+        
+        if turn_count > 1:
+            # Check if this is a follow-up to active topic
+            if active_topic and self._is_follow_up(query):
+                topic_text = active_topic.get("topic", "")
+                if topic_text:
+                    query_with_context = f"{topic_text} - {query}"
+                    is_follow_up = True
+                    logger.info(f"Follow-up detected: '{query}' -> '{query_with_context}'")
+            
+            # Fallback: extract terms from conversation if no active topic match
+            elif conversation_context and not is_follow_up:
+                context_terms = self._extract_context_terms(conversation_context)
+                if context_terms:
+                    query_with_context = f"{context_terms} {query}"
+                    logger.debug(f"Enriched with context terms: {query_with_context[:100]}...")
         
         # Use cached feature flags (avoid per-request env reads)
         expansion_enabled = _FEATURE_FLAGS["query_expansion"]
@@ -195,15 +246,13 @@ class EmbedQueryNode(Node):
         # Apply HyDE if enabled (generates hypothetical answer to embed)
         if hyde_enabled:
             logger.debug("Applying HyDE (Hypothetical Document Embeddings)...")
-            enhanced_query = generate_hypothetical_answer(query, call_llm_func=call_llm)
+            enhanced_query = generate_hypothetical_answer(query_with_context, call_llm_func=call_llm)
         elif expansion_enabled:
             logger.debug("Applying query expansion...")
-            # Use expanded query variants for embedding
-            expanded = expand_query(query, num_expansions=2, call_llm_func=call_llm)
-            # Combine original + expansions for richer embedding
+            expanded = expand_query(query_with_context, num_expansions=2, call_llm_func=call_llm)
             enhanced_query = " ".join(expanded)
         else:
-            enhanced_query = query
+            enhanced_query = query_with_context
         
         # Generate embedding for the (possibly enhanced) query
         embedding = get_embedding(enhanced_query)
@@ -212,25 +261,78 @@ class EmbedQueryNode(Node):
         return {
             "embedding": embedding,
             "original_query": query,
-            "enhanced_query": enhanced_query if enhanced_query != query else None
+            "query_with_context": query_with_context if query_with_context != query else None,
+            "enhanced_query": enhanced_query if enhanced_query != query_with_context else None,
+            "is_follow_up": is_follow_up
         }
+    
+    def _is_follow_up(self, query: str) -> bool:
+        """Detect if query is a follow-up (local, no LLM)."""
+        query_lower = query.lower().strip()
+        words = query_lower.split()
+        
+        # New topic = not a follow-up
+        if any(query_lower.startswith(starter) for starter in self.NEW_TOPIC_STARTERS):
+            return False
+        
+        # Greetings = not a follow-up
+        if query_lower in self.GREETINGS:
+            return False
+        
+        # Short query (1-3 words) that's not a greeting = likely follow-up
+        if len(words) <= 3:
+            return True
+        
+        # Short query (≤5 words) with follow-up indicator = follow-up
+        if len(words) <= 5:
+            return any(indicator in query_lower for indicator in self.FOLLOW_UP_INDICATORS)
+        
+        return False
+    
+    def _extract_context_terms(self, conversation_context: str) -> str:
+        """Extract key technical terms from conversation context for query enrichment."""
+        import re
+        
+        # Find potential app/product names (capitalized words)
+        caps_words = re.findall(r'\b[A-Z][a-z]+\b', conversation_context)
+        # Common IT terms to preserve
+        it_terms = ["outlook", "calendar", "email", "vpn", "wifi", "printer", "password", 
+                    "connection", "connections", "error", "network", "teams", "office", "mac address"]
+        
+        found_terms = []
+        context_lower = conversation_context.lower()
+        for term in it_terms:
+            if term in context_lower and term not in [t.lower() for t in found_terms]:
+                found_terms.append(term)
+        
+        # Add capitalized words (likely app names)
+        for word in caps_words[:3]:
+            if word.lower() not in [t.lower() for t in found_terms]:
+                found_terms.append(word)
+        
+        return " ".join(found_terms[:5])
     
     def exec_fallback(self, prep_res: Dict, exc: Exception) -> Dict:
         """Fallback: return zero vector if embedding fails."""
         logger.error(f"Embedding failed after retries: {exc}")
-        # Return zero vector as fallback (use cached dimension)
         embed_dim = _RAG_CONFIG["embedding_dim"]
         return {
             "embedding": [0.0] * embed_dim,
             "original_query": prep_res.get("query", ""),
-            "enhanced_query": None
+            "query_with_context": None,
+            "enhanced_query": None,
+            "is_follow_up": False
         }
     
     def post(self, shared: Dict, prep_res: Dict, exec_res: Dict) -> str:
-        """Write embedding to shared store."""
+        """Write embedding and follow-up status to shared store."""
         shared["query_embedding"] = exec_res["embedding"]
+        shared["is_follow_up"] = exec_res.get("is_follow_up", False)
         
         # Store expansion info for debugging/logging
+        if exec_res.get("query_with_context"):
+            shared["query_with_context"] = exec_res["query_with_context"]
+            logger.debug(f"Query with context: {exec_res['query_with_context'][:100]}...")
         if exec_res.get("enhanced_query"):
             shared["enhanced_query"] = exec_res["enhanced_query"]
             logger.debug(f"Query enhanced: {exec_res['enhanced_query'][:100]}...")
@@ -426,7 +528,7 @@ class DecisionMakerNode(Node):
 ### CONTEXT
 User Query: "{context['user_query']}"
 User System: {context.get('user_os', 'unknown')}
-Intent Classification: {context['intent'].get('intent', 'unknown')} (confidence: {context['intent'].get('confidence', 0):.2f})
+Intent Classification: {context['intent']}
 Conversation Turn: {context['turn_count']}
 
 Retrieved Knowledge Base ({doc_count} documents, avg score: {avg_score:.2f}):
@@ -461,16 +563,19 @@ analyze the context and decide the next action to help the employee in our offic
 5. Final Decision: Select the best action. Justify why it's superior to the alternatives now.
 
 ### DECISION RULES (READ CAREFULLY)
-1. **TOPIC MATCH CHECK**: Before answering, verify the retrieved docs actually address the user's issue. A doc about "printer not working on VPN" does NOT answer "VPN not working" - these are different problems.
-2. **IF docs match the user's topic AND scores > {doc_threshold}, answer**. If docs are tangentially related (e.g., mention VPN but solve a different problem), **clarify** what the user needs.
-3. **CONTACT INFO & ROLES**: If the user asks "who to contact", and docs contain relevant contacts, answer.
-4. **VAGUE QUERIES**: For short queries like "vpn not working", "wifi issues", "help" - **clarify** what specific problem they're experiencing before assuming.
+1. **USER CONFIRMATION = ANSWER**: If user says "yes", "correct", "that's right", "exactly", or similar confirmations after a clarifying question, they are confirming the issue. **ALWAYS choose 'answer'** and provide the solution from the retrieved documents.
+2. **TOPIC MATCH CHECK**: Before answering, verify the retrieved docs actually address the user's issue. A doc about "printer not working on VPN" does NOT answer "VPN not working" - these are different problems.
+3. **IF docs match the user's topic AND scores > {doc_threshold}, answer**. If docs are tangentially related (e.g., mention VPN but solve a different problem), **clarify** what the user needs.
+4. **CONTACT INFO & ROLES**: If the user asks "who to contact", and docs contain relevant contacts, answer.
+5. **VAGUE QUERIES**: For short queries like "vpn not working", "wifi issues", "help" - **clarify** what specific problem they're experiencing before assuming.
 6. You have searched {context['search_count']} times (max: {context['max_searches']}). If at max, choose 'answer' or 'clarify', NOT 'search_kb'.
 7. **PRIORITIZE SEARCH**: If you haven't searched yet and the query contains specific keywords (e.g., "router", "wifi", "who to ask"), choose 'search_kb' instead of 'clarify'.
 8. Only clarify if: (a) You have already searched and found nothing OR (b) Query is completely incomprehensible (e.g. "help", "it doesn't work") OR (c) Documents retrieved but irrelevant (score < {doc_threshold}).
 9. Never create ticket without attempting resolution first.
+10. **NEVER CLARIFY TWICE IN A ROW**: If conversation history shows we just asked a clarifying question, do NOT clarify again. Choose 'answer' with best available info.
 
 ### EXAMPLES OF CORRECT BEHAVIOR
+- User confirms "yes" after clarification + docs available → **answer** with the solution
 - User asks "who to contact about router?" + You have docs about router contacts (score 0.72) → **answer** with contact info
 - User asks "router" (vague) + No good docs → **clarify** what they need
 - User asks clear question + No docs found → **search_kb** OR **answer** saying you don't have that info
@@ -571,12 +676,9 @@ Think carefully and make the best decision for the user."""
         
         # Smart fallback based on available context
         has_docs = bool(prep_res.get("rag_context")) and prep_res.get("doc_count", 0) > 0
-        intent = prep_res.get("intent", {}).get("intent", "unknown")
-        confidence = prep_res.get("intent", {}).get("confidence", 0)
         
         # If rate limit and we have good docs, try to answer
-        doc_conf_threshold = POLICY_LIMITS["doc_confidence_threshold"]
-        if "rate limit" in str(exc).lower() and has_docs and confidence > doc_conf_threshold:
+        if "rate limit" in str(exc).lower() and has_docs:
             return {
                 "action": "answer",
                 "reasoning": "Rate limited but have relevant docs",
@@ -634,31 +736,46 @@ class GenerateAnswerNode(Node):
     
     def exec(self, context: Dict) -> Dict:
         """Generate answer using LLM."""
+        user_query = context['user_query']
+        user_os = context.get('user_os', 'unknown')
+        conversation_history = context['conversation_history'] or ''
+        
+        # Check if this is a confirmation response
+        confirmation_words = ["yes", "yeah", "yep", "correct", "right", "exactly", "that's it", "thats it"]
+        is_confirmation = user_query.lower().strip() in confirmation_words
+        
         prompt = f"""You are a helpful IT support assistant for Stibo Systems.
 
-USER QUESTION: "{context['user_query']}"
+USER'S CURRENT MESSAGE: "{user_query}"
+USER'S OPERATING SYSTEM: {user_os}
 
-KNOWLEDGE BASE:
+CONVERSATION HISTORY:
+{conversation_history if conversation_history else 'No previous conversation'}
+
+KNOWLEDGE BASE DOCUMENTS:
 {context['rag_context'] or 'No relevant documents found.'}
 
-CONVERSATION HISTORY: {context['conversation_history'] or 'None'}
+### CRITICAL INSTRUCTIONS
+1. **IF USER CONFIRMS (says "yes", "correct", etc.)**: Look at the conversation history to understand what they're confirming, then provide the SOLUTION from the knowledge base documents. DO NOT ask for more details.
+2. **PROVIDE THE SOLUTION**: The knowledge base contains the answer. Extract the step-by-step solution and present it clearly.
+3. **BE DIRECT**: Don't say "since you said yes..." or reference their confirmation. Just provide the solution.
+4. **USE THE DOCS**: The solution is in the knowledge base. Use it!
+5. **OS AWARENESS**: The user is on {user_os}. If the knowledge base only has instructions for a DIFFERENT operating system (e.g., phone/Android/iOS when user is on Linux/Windows/Mac), acknowledge this mismatch. Say something like "I found instructions for [other OS], but I don't have {user_os}-specific documentation for this. Here's what I found which may help, or you can contact IT support for {user_os}-specific guidance."
 
-### INSTRUCTIONS
-1. **ANSWER THE QUESTION**: Read the user's question carefully and provide a direct answer using the knowledge base.
-2. **EXTRACT RELEVANT INFO**: If user asks "who is X" and docs mention X, extract and present that information clearly.
-3. **NO GENERIC RESPONSES**: Don't give contact info unless the user asked for it or the question can't be answered.
-4. **BE SPECIFIC**: If docs contain the answer, use it. Don't ignore relevant content.
-5. **ADMIT GAPS**: If docs don't contain the answer, say "I don't have information about that" rather than giving unrelated info.
+### WHAT NOT TO DO
+- DON'T say "However, since your current response is just 'yes'..."
+- DON'T ask for more clarification after user confirms
+- DON'T ignore the knowledge base content
+- DON'T give generic troubleshooting if docs have specific steps
+- DON'T present phone/mobile instructions as if they work for desktop OS without acknowledging the difference
 
 ### OUTPUT FORMAT (YAML)
 ```yaml
-action: <factual_response | step_by_step_instructions | reference_summary>
+action: <factual_response | step_by_step_instructions>
 confidence: <0.0-1.0>
 response_to_user: |
-    <your response here>
-```
-
-Confidence: 1.0=exact match in docs, 0.8-0.9=inferred, 0.5-0.7=partial, <0.5=uncertain"""
+    <Provide the actual solution from the knowledge base. If docs don't match user's OS, acknowledge this.>
+```"""
 
         answer = call_llm(prompt, max_tokens=512)
 
@@ -668,26 +785,35 @@ Confidence: 1.0=exact match in docs, 0.8-0.9=inferred, 0.5-0.7=partial, <0.5=unc
         logger.debug(f"Generated answer: {len(decision)} chars")
         return decision
     
-    def exec_fallback(self, prep_res: Dict, exc: Exception) -> str:
+    def exec_fallback(self, prep_res: Dict, exc: Exception) -> Dict:
         """Fallback: provide helpful message based on available context."""
         logger.error(f"Answer generation failed: {exc}")
         
         if "rate limit" in str(exc).lower():
-            return ("I'm currently experiencing high API usage. However, based on the available documentation, "
+            return {
+                "response_to_user": "I'm currently experiencing high API usage. However, based on the available documentation, "
                     "I can see information related to your query. Please try again in a few minutes, "
-                    "or contact IT support directly for immediate assistance.")
+                    "or contact IT support directly for immediate assistance.",
+                "confidence": 0.3
+            }
         
         # Generic fallback with context if available
         if prep_res.get("rag_context"):
-            return (f"I found relevant documentation for your query about '{prep_res['user_query']}', "
+            return {
+                "response_to_user": f"I found relevant documentation for your query about '{prep_res['user_query']}', "
                     "but I'm unable to generate a detailed response right now. "
-                    "Please check the IT knowledge base or contact support for assistance.")
+                    "Please check the IT knowledge base or contact support for assistance.",
+                "confidence": 0.2
+            }
         
-        return ("I'm having trouble generating a response right now. "
-                "Please contact IT support for direct assistance with your query.")
+        return {
+            "response_to_user": "I'm having trouble generating a response right now. "
+                "Please contact IT support for direct assistance with your query.",
+            "confidence": 0.1
+        }
     
     def post(self, shared: Dict, prep_res: Dict, exec_res: Dict) -> str:
-        """Write answer to response."""
+        """Write answer to response and update active topic."""
         if "response" not in shared:
             shared["response"] = {}
         
@@ -699,6 +825,18 @@ Confidence: 1.0=exact match in docs, 0.8-0.9=inferred, 0.5-0.7=partial, <0.5=unc
         if "confidence" in exec_res:
             shared["response"]["confidence"] = exec_res["confidence"]
         
+        # Update active topic - the question we just answered becomes the active topic
+        # This enables follow-up handling like "im on linux" after "how to find mac address"
+        session_id = shared.get("session_id", "")
+        user_query = shared.get("user_query", "")
+        keywords = shared.get("keywords", [])
+        
+        if session_id and user_query:
+            # Only set topic if it's a substantive question (not confirmation/short response)
+            if len(user_query.split()) > 3:
+                conversation_memory.set_active_topic(session_id, user_query, keywords)
+                logger.debug(f"Set active topic: {user_query[:50]}...")
+        
         return "default"
 
 
@@ -707,97 +845,85 @@ Confidence: 1.0=exact match in docs, 0.8-0.9=inferred, 0.5-0.7=partial, <0.5=unc
 # ============================================================================
 
 class AskClarifyingQuestionNode(Node):
-    """Ask user for more details when query is ambiguous."""
+    """Ask user for more details when query is ambiguous, using retrieved docs for context."""
     
     def __init__(self):
         super().__init__(max_retries=2, wait=1)
     
     def prep(self, shared: Dict) -> Dict:
-        """Read query, intent, and conversation history."""
+        """Read query, intent, retrieved docs, and conversation history."""
         session_id = shared.get("session_id", "")
         history_str = conversation_memory.get_formatted_history(session_id, limit=8, exclude_last=True)
+        
+        # Get retrieved docs to help ask targeted questions
+        retrieved_docs = shared.get("retrieved_docs", [])
         
         return {
             "user_query": shared.get("user_query", ""),
             "user_os": shared.get("user_os", "unknown"),
             "intent": shared.get("intent", {}),
-            "conversation_history": history_str
+            "conversation_history": history_str,
+            "retrieved_docs": retrieved_docs
         }
     
     def exec(self, context: Dict) -> Dict:
-        """Generate clarifying question."""
+        """Generate clarifying question based on retrieved docs."""
         user_os = context.get('user_os', 'unknown')
+        retrieved_docs = context.get('retrieved_docs', [])
+        
+        # Format retrieved docs for context - extract symptoms/issues described, NOT titles
+        doc_context = ""
+        if retrieved_docs:
+            doc_summaries = []
+            for i, doc in enumerate(retrieved_docs[:3]):  # Top 3 docs only
+                # Extract content - focus on the problem description, not the title
+                content = doc.get('document', '')[:300].replace('\n', ' ')
+                score = doc.get('rerank_score', doc.get('score', 0))
+                doc_summaries.append(f"  Doc {i+1} (relevance: {score:.2f}): {content}...")
+            doc_context = "\n".join(doc_summaries)
+        
         prompt = f"""
 ### CONTEXT
 User Query: "{context['user_query']}"
-Intent Classification: {context['intent'].get('intent', 'unclear')} (confidence: {context['intent'].get('confidence', 0):.2f})
 
 Conversation History:
 {context['conversation_history'] if context['conversation_history'] else 'No previous conversation'}
 
+### RELEVANT DOCUMENTATION FOUND (use to understand possible issues)
+{doc_context if doc_context else 'No documents retrieved.'}
+
 ### YOUR ROLE
-You are the Clarification Specialist component of an IT support AI agent for Stibo Systems. Your job is to generate precise, non-redundant clarifying questions that efficiently gather missing information relevant to our office environment.
+Ask a clarifying question to narrow down the user's specific issue.
 
-### ASSUMPTIONS
-- Assume the user is an employee working in the Stibo Systems office unless they explicitly state otherwise.
-- Do NOT ask "where are you?" or "are you in the office?".
+### CRITICAL RULES
+1. **NEVER mention document names, article titles, or filenames** - the user doesn't care about these
+2. **DESCRIBE the symptoms/issues** you found in docs to help user identify their problem
+3. **If user confirms (says "yes", "correct", "that's it")** - DO NOT ask more questions, just acknowledge
+4. Ask about specific SYMPTOMS (e.g., "Are you seeing a 'No connections' message when opening other users' calendars?")
+5. Be concise - ONE question only
 
-## REASONING PROCESS
-1.  Identify the Gap: Determine what specific information is missing based on the decision engine's analysis and conversation context.
-2.  Avoid Redundancy: Check conversation history to ensure you're not asking for information already provided.
-3.  Choose Question Type: Select the most efficient question format (open-ended, multiple choice, or specific request).
-4.  Optimize Wording: Phrase the question to be clear, specific, and easy for the user to answer.
-5.  Validate Helpfulness: Ensure the question will actually move the conversation toward resolution.
+### GOOD EXAMPLES
+- "Are you seeing a 'No connections' error when trying to view other users' calendars in Outlook?"
+- "Is Outlook showing connection issues only for shared calendars, or also for your own email?"
+
+### BAD EXAMPLES (NEVER DO THIS)
+- "...similar to the problem in the Outlook Calendar article?" ❌
+- "...as described in document XYZ?" ❌
+- "...like in the No-connections guide?" ❌
 
 If the user asks what OS they are using, respond: "You are using {user_os}"
 
-Be concise (1-2 sentences) and friendly.
-### AVAILABLE QUESTION STRATEGIES
-1.  specific_detail
-    Description: Ask for a precise piece of information (error code, version number, etc.)
-    When to use: When you need one specific data point to proceed
-
-2.  scenario_clarification  
-    Description: Clarify the context or environment where the issue occurs
-    When to use: When the problem context is ambiguous or unclear
-
-3.  symptom_elaboration
-    Description: Ask for more details about symptoms or error messages
-    When to use: When the problem description is too vague
-
-4.  multiple_choice
-    Description: Offer limited choices to quickly narrow down possibilities
-    When to use: When there are common scenarios that need differentiation
-
-### DECISION RULES & GUARDRAILS
-- BE SPECIFIC: Never ask vague questions like "Can you tell me more?" or "What seems to be the problem?"
-- AVOID REPETITION: Do not ask for information that's already in the conversation history
-- ONE QUESTION AT A TIME: Ask only one clear question per interaction to avoid confusion
-- PRESERVE CONTEXT: Reference the current problem to keep the conversation focused
-- MAINTAIN PROFESSIONAL TONE: Be polite and technical without being overly formal
-- CONSIDER INTENT CONFIDENCE: If intent confidence is low, focus on understanding the core issue first
-
 ### OUTPUT FORMAT
-Respond with a YAML object containing your clarifying question and metadata:
-
 ```yaml
-action: <specific_detail|scenario_clarification|symptom_elaboration|multiple_choice>
-reasoning: <why you chose this action in 1-2 sentences>
-confidence: <0.0 to 1.0 in your diagnosis>
+action: clarify
+reasoning: <brief reason>
+confidence: <0.0 to 1.0>
 response_to_user: |
-  <if specific_detail: Ask a direct, single question to get one precise piece of information (e.g., "What is the exact error code?").>
-  <if scenario_clarification: Ask about the context or environment where the issue occurs (e.g., "Are you running this locally or in production?").>
-  <if symptom_elaboration: Ask for more detailed descriptions of the symptoms or error messages (e.g., "What exactly does the error message say?").>
-  <if multiple_choice: Offer 2-4 clear, distinct choices to quickly narrow down the problem (e.g., "Is it A) X, B) Y, or C) Z?").>
+  <Your question describing symptoms, NOT referencing documents>
 ```
-### RESPONSE STYLE GUIDELINES
-- Be conversational and empathetic, not robotic
-- Use bullet points for step_by_step_instructions
-
-Generate the most efficient clarifying question that will provide the missing information needed to resolve the user's issue.
 """
 
-        question = call_llm(prompt, max_tokens=256)  # Limit tokens for clarification
+        question = call_llm(prompt, max_tokens=200)  # Shorter for clarification
         
         yaml_str = question.split("```yaml")[1].split("```")[0].strip() if "```yaml" in question else question
         decision = yaml.safe_load(yaml_str)
@@ -813,7 +939,7 @@ Generate the most efficient clarifying question that will provide the missing in
         return "Could you please provide more details about your issue?"
     
     def post(self, shared: Dict, prep_res: Dict, exec_res: Any) -> str:
-        """Write clarifying question to response."""
+        """Write clarifying question to response and preserve active topic."""
         if "response" not in shared:
             shared["response"] = {}
         
@@ -825,6 +951,16 @@ Generate the most efficient clarifying question that will provide the missing in
         shared["response"]["text"] = response_text
         shared["response"]["action_taken"] = "clarify"
         shared["response"]["requires_followup"] = True
+        
+        # Set active topic to the user's original query (what we're asking clarification about)
+        # This enables follow-up context like "yes" or "im on linux"
+        session_id = shared.get("session_id", "")
+        user_query = shared.get("user_query", "")
+        keywords = shared.get("keywords", [])
+        
+        if session_id and user_query and len(user_query.split()) > 2:
+            conversation_memory.set_active_topic(session_id, user_query, keywords)
+            logger.debug(f"Clarify: Set active topic: {user_query[:50]}...")
         
         return "default"
 
@@ -907,7 +1043,7 @@ class InteractiveTroubleshootNode(Node):
         prompt = f"""### CONTEXT
 User Query: "{context['user_query']}"
 User System: {context.get('user_os', 'unknown')} / {context.get('user_browser', 'unknown')}
-Intent Classification: {context['intent'].get('intent', 'unknown')} (confidence: {context['intent'].get('confidence', 0):.2f})
+Intent Classification: {context['intent']}
 Troubleshooting Step: {context['current_step'] + 1}
 Steps Completed: {len(context['steps_completed'])}
 Failed Steps: {len(context['failed_steps'])}

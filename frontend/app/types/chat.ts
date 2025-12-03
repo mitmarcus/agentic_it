@@ -2,8 +2,7 @@ export interface Message {
   id: string;
   role: "user" | "assistant";
   content: string;
-  intentType?: string; // The classified intent (e.g., "search_kb", "greeting")
-  intentConfidence?: number; // Confidence in understanding what user wants
+  intentType?: string; // The classified intent (e.g., "factual", "troubleshooting")
   decisionConfidence?: number; // Confidence in the action/answer quality
   responseType?: string;
   timestamp: number;

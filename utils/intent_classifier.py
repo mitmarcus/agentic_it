@@ -10,7 +10,7 @@ from typing import Any, Dict, Literal
 IntentType = Literal["factual", "troubleshooting", "navigation"]
 
 
-def classify_intent(query: str) -> Dict[str, Any]:
+def classify_intent(query: str) -> str:
     """
     Classify user query intent using rule-based heuristics.
     
@@ -18,7 +18,7 @@ def classify_intent(query: str) -> Dict[str, Any]:
         query: User query text
     
     Returns:
-        Dict with intent type and confidence score
+        Intent type: 'factual', 'troubleshooting', or 'navigation'
     """
     query_lower = query.lower().strip()
     
@@ -32,7 +32,7 @@ def classify_intent(query: str) -> Dict[str, Any]:
     # Navigation patterns
     navigation_keywords = [
         "where is", "where can i find", "how do i access", "show me",
-        "navigate to", "go to", "find", "locate", "search for"
+        "navigate to", "go to", "find", "locate", "search for", "how to"
     ]
     
     # Question words that indicate factual queries
@@ -77,10 +77,7 @@ def classify_intent(query: str) -> Dict[str, Any]:
     total = troubleshooting_score + navigation_score + factual_score
     if total == 0:
         # Default to factual for ambiguous queries
-        return {
-            "intent": "factual",
-            "confidence": 0.5
-        }
+        return "factual"
     
     troubleshooting_score /= total
     navigation_score /= total
@@ -88,19 +85,11 @@ def classify_intent(query: str) -> Dict[str, Any]:
     
     # Determine primary intent
     if troubleshooting_score > navigation_score and troubleshooting_score > factual_score:
-        intent = "troubleshooting"
-        confidence = troubleshooting_score
+        return "troubleshooting"
     elif navigation_score > factual_score:
-        intent = "navigation"
-        confidence = navigation_score
+        return "navigation"
     else:
-        intent = "factual"
-        confidence = factual_score
-    
-    return {
-        "intent": intent,
-        "confidence": confidence
-    }
+        return "factual"
 
 
 def is_greeting(query: str) -> bool:
@@ -150,6 +139,6 @@ if __name__ == "__main__":
     ]
     
     for query in test_queries:
-        result = classify_intent(query)
+        intent = classify_intent(query)
         print(f"\nQuery: {query}")
-        print(f"Intent: {result['intent']} (confidence: {result['confidence']:.2f})")
+        print(f"Intent: {intent}")
