@@ -79,12 +79,7 @@ def classify_intent(query: str) -> Dict[str, Any]:
         # Default to factual for ambiguous queries
         return {
             "intent": "factual",
-            "confidence": 0.5,
-            "scores": {
-                "factual": 0.5,
-                "troubleshooting": 0.25,
-                "navigation": 0.25
-            }
+            "confidence": 0.5
         }
     
     troubleshooting_score /= total
@@ -104,12 +99,7 @@ def classify_intent(query: str) -> Dict[str, Any]:
     
     return {
         "intent": intent,
-        "confidence": confidence,
-        "scores": {
-            "factual": factual_score,
-            "troubleshooting": troubleshooting_score,
-            "navigation": navigation_score
-        }
+        "confidence": confidence
     }
 
 
@@ -163,4 +153,3 @@ if __name__ == "__main__":
         result = classify_intent(query)
         print(f"\nQuery: {query}")
         print(f"Intent: {result['intent']} (confidence: {result['confidence']:.2f})")
-        print(f"Scores: {result['scores']}")
