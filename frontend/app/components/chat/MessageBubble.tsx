@@ -1,6 +1,31 @@
 "use client";
-import { useState } from "react";
+import { useState, ReactNode } from "react";
 import type { Message } from "../../types/chat";
+
+// Convert URLs in text to clickable links
+function linkifyText(text: string): ReactNode[] {
+  const urlRegex = /(https?:\/\/[^\s<>"{}|\\^`[\]]+)/g;
+  const parts = text.split(urlRegex);
+
+  return parts.map((part, index) => {
+    if (urlRegex.test(part)) {
+      // Reset regex lastIndex since we're reusing it
+      urlRegex.lastIndex = 0;
+      return (
+        <a
+          key={index}
+          href={part}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-blue-600 hover:text-blue-800 underline break-all"
+        >
+          {part}
+        </a>
+      );
+    }
+    return part;
+  });
+}
 
 function getResponseTypeLabel(type?: string) {
   switch (type) {
@@ -130,7 +155,7 @@ export function MessageBubble({
         }`}
       >
         <div className="leading-relaxed whitespace-pre-wrap wrap-break-word">
-          {message.content}
+          {isUser ? message.content : linkifyText(message.content)}
         </div>
         {message.role === "assistant" && message.responseType && (
           <div className="flex gap-3 mt-2.5 text-xs text-slate-600 flex-wrap items-center">
