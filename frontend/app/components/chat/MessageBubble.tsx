@@ -168,53 +168,36 @@ export function MessageBubble({
             >
               {getResponseTypeLabel(message.responseType)}
             </span>
-            {/* Show both confidence values */}
-            {(message.intentConfidence !== undefined ||
-              message.decisionConfidence !== undefined) && (
-              <div className="flex items-center gap-2">
-                {message.intentConfidence !== undefined && (
+            {/* Show intent type and decision confidence */}
+            <div className="flex items-center gap-2">
+              {message.intentType && (
+                <span
+                  className="font-medium text-slate-600"
+                  title="Intent classification"
+                >
+                  {message.intentType}
+                </span>
+              )}
+              {message.decisionConfidence !== undefined && (
+                <span
+                  className="font-medium flex items-center gap-1"
+                  style={{
+                    color: getConfidenceColor(message.decisionConfidence),
+                  }}
+                  title="Answer/decision confidence based on retrieved data"
+                >
                   <span
-                    className="font-medium flex items-center gap-1"
+                    className="inline-block w-2 h-2 rounded-full"
                     style={{
-                      color: getConfidenceColor(message.intentConfidence),
+                      backgroundColor: getConfidenceColor(
+                        message.decisionConfidence
+                      ),
                     }}
-                    title="Intent classification confidence"
-                  >
-                    <span
-                      className="inline-block w-2 h-2 rounded-full"
-                      style={{
-                        backgroundColor: getConfidenceColor(
-                          message.intentConfidence
-                        ),
-                      }}
-                    />
-                    {message.intentType
-                      ? `${message.intentType}: `
-                      : "Intent: "}
-                    {(message.intentConfidence * 100).toFixed(0)}%
-                  </span>
-                )}
-                {message.decisionConfidence !== undefined && (
-                  <span
-                    className="font-medium flex items-center gap-1"
-                    style={{
-                      color: getConfidenceColor(message.decisionConfidence),
-                    }}
-                    title="Answer/decision confidence based on retrieved data"
-                  >
-                    <span
-                      className="inline-block w-2 h-2 rounded-full"
-                      style={{
-                        backgroundColor: getConfidenceColor(
-                          message.decisionConfidence
-                        ),
-                      }}
-                    />
-                    Answer: {(message.decisionConfidence * 100).toFixed(0)}%
-                  </span>
-                )}
-              </div>
-            )}
+                  />
+                  Answer: {(message.decisionConfidence * 100).toFixed(0)}%
+                </span>
+              )}
+            </div>
 
             {/* Feedback Buttons */}
             {showFeedbackButtons && (

@@ -86,11 +86,22 @@ The system has four main flows:
 3. **SimpleQueryFlow**: Simplified flow for testing (direct search → answer)
 4. **NetworkStatusFlow**: Async flow for checking company status page
 
+#### Follow-Up Context Strategy
+
+To handle multi-turn conversations correctly (e.g., "how to find mac address" → "im on linux"), the **`EmbedQueryNode`** handles follow-up detection locally (no LLM needed):
+
+1. **Active Topic Tracking**: `conversation_memory` stores the last answered topic
+2. **Follow-up Detection**: Short queries (≤5 words) with OS/version/confirmation words are detected as follow-ups
+3. **Query Enrichment**: Follow-ups are enriched with topic context (e.g., "im on linux" → "how to find mac address - im on linux")
+4. **Fallback**: If no active topic, extract IT terms from conversation history
+
+This prevents the system from misinterpreting context switches and ensures continuity.
+
 ```mermaid
 flowchart TD
     subgraph QueryFlow["Main Query Flow"]
         A[RedactInputNode] --> B[IntentClassificationNode]
-        B --> C[EmbedQueryNode]
+        B --> C[EmbedQueryNode<br/>+ follow-up detection]
         C --> D[SearchKnowledgeBaseNode]
         D -->|docs_found| E[DecisionMakerNode]
         D -->|no_docs| E

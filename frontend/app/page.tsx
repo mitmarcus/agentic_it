@@ -56,9 +56,8 @@ export default function Home() {
         setSessionId(data.session_id);
       }
 
-      // Extract both intent confidence and decision confidence
-      const intentType = data.metadata?.intent?.intent;
-      const intentConfidence = data.metadata?.intent?.confidence;
+      // Extract intent (now just a string) and decision confidence
+      const intentType = data.metadata?.intent;
       const decisionConfidence = data.metadata?.decision?.confidence;
       const retrievedDocIds = data.metadata?.retrieved_doc_ids;
 
@@ -67,8 +66,6 @@ export default function Home() {
         role: "assistant",
         content: data.response,
         intentType: typeof intentType === "string" ? intentType : undefined,
-        intentConfidence:
-          typeof intentConfidence === "number" ? intentConfidence : undefined,
         decisionConfidence:
           typeof decisionConfidence === "number"
             ? decisionConfidence
@@ -106,7 +103,6 @@ export default function Home() {
           message.userQuery,
           message.content,
           feedbackType,
-          undefined, // comment
           message.retrievedDocIds // doc IDs for feedback-aware retrieval
         );
 

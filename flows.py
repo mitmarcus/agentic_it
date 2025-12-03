@@ -65,7 +65,7 @@ class QueryFlow(Flow):
         create_ticket_node = NotImplementedNode("Ticket creation")
         
         # Connect nodes
-        # Linear path: redact -> intent -> embed -> search
+        # Linear path: redact -> intent -> embed (with follow-up detection) -> search
         _ = redact_node >> intent_node >> embed_node >> search_node
         
         # Search can go to decision maker regardless of whether docs found
