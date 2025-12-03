@@ -64,23 +64,10 @@ async def lifespan(app: FastAPI):
     
     # Test ChromaDB connection
     try:
-        from utils.chromadb_client import initialize_client, get_collection_stats, get_collection
+        from utils.chromadb_client import initialize_client, get_collection_stats
         initialize_client()
         stats = get_collection_stats()
         logger.info(f"ChromaDB connected: {stats['count']} chunks indexed")
-        
-        # Initialize BM25 index for hybrid search
-        hybrid_enabled = os.getenv("HYBRID_SEARCH_ENABLED", "true").lower() == "true"
-        if hybrid_enabled and stats['count'] > 0:
-            from utils.hybrid_search import rebuild_bm25_from_chromadb
-            collection = get_collection()
-            if collection:
-                num_indexed = rebuild_bm25_from_chromadb(collection)
-                logger.info(f"BM25 index initialized: {num_indexed} documents")
-            else:
-                logger.warning("Could not get ChromaDB collection for BM25 indexing")
-        elif hybrid_enabled:
-            logger.info("BM25 index not built (no documents in ChromaDB yet)")
     except Exception as e:
         logger.warning(f"ChromaDB connection check failed: {e}")
         logger.warning("Indexing may be required. Use POST /index to index documents.")
