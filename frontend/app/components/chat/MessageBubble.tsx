@@ -11,16 +11,29 @@ function linkifyText(text: string): ReactNode[] {
     if (urlRegex.test(part)) {
       // Reset regex lastIndex since we're reusing it
       urlRegex.lastIndex = 0;
+      
+      // Strip trailing punctuation that shouldn't be part of URL
+      let url = part;
+      let trailing = "";
+      const trailingPunctuation = /[.,;:!?)]+$/;
+      const match = url.match(trailingPunctuation);
+      if (match) {
+        trailing = match[0];
+        url = url.slice(0, -trailing.length);
+      }
+      
       return (
-        <a
-          key={index}
-          href={part}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="text-blue-600 hover:text-blue-800 underline break-all"
-        >
-          {part}
-        </a>
+        <span key={index}>
+          <a
+            href={url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-blue-600 hover:text-blue-800 underline break-all"
+          >
+            {url}
+          </a>
+          {trailing}
+        </span>
       );
     }
     return part;
