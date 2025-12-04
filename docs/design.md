@@ -233,9 +233,9 @@ LoadDocumentsNode → ChunkDocumentsNode → EmbedDocumentsNode → StoreInChrom
 3. **Intent Classifier** (`utils/intent_classifier.py`)
 
    - **Input**: `query: str`
-   - **Output**: `{"intent": str, "confidence": float}` - Only the winning intent is returned
+   - **Output**: `str` - Returns intent type: "factual", "troubleshooting", or "navigation"
    - **Necessity**: Routes queries to appropriate actions
-   - **Implementation**: Optimized rule-based classification using frozensets for O(1) keyword lookup
+   - **Implementation**: Rule-based classification using keyword matching and score normalization
    - **Additional Functions**: `extract_keywords()`, `is_greeting()`, `is_farewell()`
 
 4. **Conversation Memory** (`utils/conversation_memory.py`)
@@ -336,11 +336,7 @@ shared = {
     "redaction_notice": "Your message contained sensitive data that was removed for security.",
 
     # Intent Classification
-    "intent": {
-        "intent": "troubleshooting",
-        "confidence": 0.85,
-        "scores": {"factual": 0.1, "troubleshooting": 0.85, "navigation": 0.05}
-    },
+    "intent": "troubleshooting",  # String: "factual", "troubleshooting", or "navigation"
 
     # Conversation State (from ConversationMemory)
     "conversation_history": [
@@ -712,29 +708,26 @@ All nodes follow the pattern: **Read in `prep()` → Process in `exec()` → Wri
   - Answer quality (factual accuracy, helpfulness)
   - Response latency per node
 
-### RAG Improvements (Implemented)
+### RAG Improvements
 
-Based on the article "Practical Improvements for RAG Systems", the following six optimizations have been implemented:
+Based on the article "Practical Improvements for RAG Systems", the following optimizations have been evaluated:
 
-#### 1. Reranking (Cross-Encoder)
+#### 1. Reranking (Cross-Encoder) ✅ ACTIVE
 
 - **File**: `utils/reranker.py`
 - **Purpose**: Re-scores top candidates using a cross-encoder for higher precision
 - **Model**: `cross-encoder/ms-marco-MiniLM-L-6-v2` (configurable)
 - **Config**: `RERANKER_ENABLED=true`, `RERANKER_MODEL`
 
-#### 2. Hybrid Search (BM25 + Vector)
+#### 2. Hybrid Search (BM25 + Vector) ❌ REMOVED
 
-- **File**: `utils/hybrid_search.py`
-- **Purpose**: Combines BM25 keyword search with vector similarity using RRF fusion
-- **Benefit**: Better recall for keyword-heavy queries
-- **Config**: `HYBRID_SEARCH_ENABLED=true`, `HYBRID_VECTOR_WEIGHT`, `HYBRID_BM25_WEIGHT`
+- **Status**: Removed in commit 76c5719 due to excessive latency
+- **Reason**: BM25 index building and RRF fusion added too much overhead for real-time queries
 
-#### 3. MMR Diversity (Maximal Marginal Relevance)
+#### 3. MMR Diversity (Maximal Marginal Relevance) ❌ REMOVED
 
-- **File**: `utils/mmr.py`
-- **Purpose**: Reduces redundancy by selecting diverse documents
-- **Config**: `MMR_ENABLED=true`, `MMR_LAMBDA=0.7` (1.0 = relevance, 0.0 = diversity)
+- **Status**: Removed in commit 76c5719 due to excessive latency
+- **Reason**: Diversity calculation on embeddings added latency without significant retrieval quality improvement
 
 #### 4. Query Expansion
 
@@ -742,16 +735,14 @@ Based on the article "Practical Improvements for RAG Systems", the following six
 - **Purpose**: Uses LLM to generate alternative phrasings for better recall
 - **Features**: Standard expansion, HyDE (Hypothetical Document Embeddings)
 - **Config**: `QUERY_EXPANSION_ENABLED=false`, `HYDE_ENABLED=false`
-- **Warning**: Adds LLM latency per query
+- **Warning**: Adds LLM latency per query (disabled by default)
 
-#### 5. Metadata Filtering
+#### 5. Metadata Filtering ❌ REMOVED
 
-- **File**: `utils/metadata_filter.py`
-- **Purpose**: Pre-filters documents by category/type based on query analysis
-- **Features**: Auto-detects category, doc type, recency from query
-- **Config**: `METADATA_FILTER_ENABLED=true`, `METADATA_FILTER_MIN_CONFIDENCE=0.7`
+- **Status**: Removed in commit 76c5719 due to excessive latency
+- **Reason**: Query analysis and pre-filtering overhead outweighed filtering benefits
 
-#### 6. Feedback Loop
+#### 6. Feedback Loop ✅ ACTIVE
 
 - **File**: `utils/feedback.py`
 - **Purpose**: Collects user feedback AND adjusts retrieval scores based on feedback history
@@ -769,28 +760,17 @@ Based on the article "Practical Improvements for RAG Systems", the following six
 
 ### Search Pipeline Order
 
-The search pipeline applies improvements in this order:
+The search pipeline applies improvements in this order (simplified after latency optimization):
 
-1. **Metadata Filter** → Pre-filter by category/type (reduces search space)
-2. **Vector Search** → Initial retrieval from ChromaDB
-3. **Hybrid Search** → Merge with BM25 results via RRF
-4. **MMR Diversity** → Remove redundant documents
-5. **Reranking** → Re-score with cross-encoder for precision
-6. **Feedback Adjustment** → Boost/penalize based on user feedback history
+1. **Vector Search** → Initial retrieval from ChromaDB
+2. **Reranking** → Re-score with cross-encoder for precision (if enabled)
+3. **Feedback Adjustment** → Boost/penalize based on user feedback history
 
 ```
-Query → [Query Expansion] → Embed → [Metadata Filter] → Vector Search
-                                          ↓
-                                    [Hybrid BM25+RRF]
-                                          ↓
-                                    [MMR Diversity]
-                                          ↓
-                                     [Reranking]
-                                          ↓
-                                  [Feedback Adjustment]
-                                          ↓
-                                    Top-K Results
+Query → Embed → Vector Search → [Reranking] → [Feedback Adjustment] → Top-K Results
 ```
+
+**Note**: BM25 hybrid search, MMR diversity, and metadata filtering were removed in commit 76c5719 due to excessive latency. The simplified pipeline provides faster response times while maintaining acceptable retrieval quality.
 
 ### Flow-Level Optimizations
 
@@ -803,8 +783,7 @@ Query → [Query Expansion] → Embed → [Metadata Filter] → Vector Search
 2. **Retrieval Quality**:
 
    - Tune `RAG_TOP_K` and `RAG_MIN_SCORE` parameters
-   - Implement re-ranking after initial retrieval
-   - Use hybrid search (keyword + semantic) for better recall
+   - Implement re-ranking after initial retrieval (cross-encoder)
 
 3. **Agent Decision Making**:
    - Provide clear, non-overlapping action definitions
