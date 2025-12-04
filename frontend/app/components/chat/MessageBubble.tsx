@@ -11,7 +11,7 @@ function linkifyText(text: string): ReactNode[] {
     if (urlRegex.test(part)) {
       // Reset regex lastIndex since we're reusing it
       urlRegex.lastIndex = 0;
-      
+
       // Strip trailing punctuation that shouldn't be part of URL
       let url = part;
       let trailing = "";
@@ -21,7 +21,7 @@ function linkifyText(text: string): ReactNode[] {
         trailing = match[0];
         url = url.slice(0, -trailing.length);
       }
-      
+
       return (
         <span key={index}>
           <a
