@@ -534,16 +534,16 @@ class DecisionMakerNode(Node):
     
     def exec(self, context: Dict) -> Dict:
         """Call LLM to decide next action."""
-        clarify_threshold = POLICY_LIMITS["clarify_confidence_threshold"]
         doc_threshold = POLICY_LIMITS["doc_confidence_threshold"]
         doc_count = context.get('doc_count', 0)
         avg_score = sum(context.get('doc_scores', [])) / len(context.get('doc_scores', [])) if context.get('doc_scores') else 0
+        intent = context.get('intent', 'informative')
         
         prompt = f"""
 ### CONTEXT
 User Query: "{context['user_query']}"
 User System: {context.get('user_os', 'unknown')}
-Intent Classification: {context['intent']}
+Intent: {intent} ({'user has a problem to fix' if intent == 'troubleshooting' else 'user wants information/guidance'})
 Conversation Turn: {context['turn_count']}
 
 Retrieved Knowledge Base ({doc_count} documents, avg score: {avg_score:.2f}):
@@ -638,12 +638,13 @@ Current Workflow State: {context['workflow_status']}"""
     - Multiple interpretations of the problem are possible
 
 ### DECISION RULES & GUARDRAILS
+- **INTENT-BASED ROUTING**: If intent = 'troubleshooting' AND no clear solution in docs → prefer 'troubleshoot' action. If intent = 'informative' → prefer 'answer' or 'search_kb'.
 - If any active network issues match user's issue → answer
 - IMPORTANT: You have searched {context['search_count']} times (max: {context['max_searches']}). If at max, you MUST choose 'answer' (with best available info), 'clarify' or 'create_ticket', NOT 'search_kb'
-- If intent confidence < {clarify_threshold:.2f} AND query lacks technical terms → clarify. If query has technical terms (e.g. "router", "vpn", "wifi"), prefer 'search_kb'.
-- If intent is factual AND retrieved document provides a clear, direct solution → answer
+- If intent = 'informative' AND retrieved document provides a clear, direct answer → answer
+- If intent = 'troubleshooting' AND docs have step-by-step fix → answer with the fix
+- If intent = 'troubleshooting' AND no clear fix in docs → troubleshoot (interactive diagnostic)
 - If user message contains explicit error codes, logs, or attachments → troubleshoot (unless 'search_kb' finds an exact-match).
-- If intent = troubleshooting + no workflow started → troubleshoot (or answer if we have the document)
 - If user explicitly requests 'talk to human', 'create ticket', or 'escalate', choose 'create_ticket'.
 - Use 'create_ticket' after other resolution paths ('search_kb', troubleshoot) are exhausted or if the issue requires privileges/physical access.
 - If the same document keep appearing in searches, do not search again. 'answer' with the best information you have.
