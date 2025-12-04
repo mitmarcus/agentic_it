@@ -148,8 +148,9 @@ flowchart LR
 
 2. **IntentClassificationNode**
 
-   - Classifies query intent: factual / troubleshooting / navigation
+   - Classifies query intent: **informative** (seeking information) or **troubleshooting** (has a problem to fix)
    - Extracts keywords for search optimization
+   - Intent influences DecisionMaker routing (troubleshooting intent biases toward troubleshoot action)
 
 3. **EmbedQueryNode**
 
@@ -233,9 +234,12 @@ LoadDocumentsNode → ChunkDocumentsNode → EmbedDocumentsNode → StoreInChrom
 3. **Intent Classifier** (`utils/intent_classifier.py`)
 
    - **Input**: `query: str`
-   - **Output**: `str` - Returns intent type: "factual", "troubleshooting", or "navigation"
-   - **Necessity**: Routes queries to appropriate actions
-   - **Implementation**: Rule-based classification using keyword matching and score normalization
+   - **Output**: `str` - Returns intent type: "informative" or "troubleshooting"
+   - **Necessity**: Helps DecisionMaker route queries appropriately
+   - **Implementation**: Rule-based binary classification using frozenset keyword matching
+   - **Intent Definitions**:
+     - `informative`: User wants information, explanations, how-to guides, contact info
+     - `troubleshooting`: User has a problem/error they need help fixing
    - **Additional Functions**: `extract_keywords()`, `is_greeting()`, `is_farewell()`
 
 4. **Conversation Memory** (`utils/conversation_memory.py`)
@@ -335,8 +339,8 @@ shared = {
     "had_sensitive_data": True,  # Flag if redaction occurred
     "redaction_notice": "Your message contained sensitive data that was removed for security.",
 
-    # Intent Classification
-    "intent": "troubleshooting",  # String: "factual", "troubleshooting", or "navigation"
+    # Intent Classification (binary)
+    "intent": "troubleshooting",  # String: "informative" or "troubleshooting"
 
     # Conversation State (from ConversationMemory)
     "conversation_history": [
@@ -654,7 +658,7 @@ All nodes follow the pattern: **Read in `prep()` → Process in `exec()` → Wri
 
 ### Phase 2: Basic RAG ✅ COMPLETE
 
-- ✅ Implement `IntentClassificationNode` (rule-based with factual/troubleshooting/navigation)
+- ✅ Implement `IntentClassificationNode` (rule-based binary: informative/troubleshooting)
 - ✅ Implement `EmbedQueryNode` (with retry logic)
 - ✅ Implement `SearchKnowledgeBaseNode` (ChromaDB cosine similarity)
 - ✅ Implement `GenerateAnswerNode` (with context from RAG)
@@ -1103,7 +1107,7 @@ Conversation History:
 
 ### DECISION RULES
 - If search_count >= 3 and still no good docs → answer with what you have
-- If intent = factual + good docs found → answer
+- If intent = informative + good docs found → answer
 - If intent = troubleshooting → troubleshoot
 - If query is too vague → clarify
 
