@@ -24,6 +24,21 @@ from utils.reranker import rerank_results
 from utils.feedback import apply_feedback_adjustments
 from utils.query_expansion import expand_query, generate_hypothetical_answer
 from utils.logger import get_logger
+from utils.prompts import (
+    COMPANY_NAME,
+    SYSTEM_ROLE,
+    COMMON_ASSUMPTIONS,
+    COMMON_DONTS,
+    URL_RULES,
+    CLARIFY_BAD_EXAMPLES,
+    DECISION_MAKER_ROLE,
+    RATE_LIMIT_MESSAGE,
+    RATE_LIMIT_WITH_DOCS_MESSAGE,
+    GENERIC_ERROR_MESSAGE,
+    GENERIC_CLARIFY_MESSAGE,
+    os_awareness_instruction,
+    parse_yaml_response,
+)
 
 logger = get_logger(__name__)
 
@@ -545,15 +560,11 @@ Current Workflow State: {context['workflow_status']}"""
         logger.debug(f"Decision maker prompt (first 500 chars): {prompt[:500]}...")
         logger.debug(f"RAG context length: {len(context.get('rag_context', ''))} chars")
         
-        prompt += """
+        prompt += f"""
 
-### YOUR ROLE
-You are the decision-making component of an IT support chatbot for Stibo Systems. Your job is to 
-analyze the context and decide the next action to help the employee in our office environment efficiently.
+{DECISION_MAKER_ROLE}
 
-### ASSUMPTIONS
-- Assume the user is an employee working in the Stibo Systems office unless they explicitly state otherwise (e.g., "I am at home", "remote", "public wifi").
-- Prioritize office-related solutions first.
+{COMMON_ASSUMPTIONS}
 
 ## REASONING PROCESS
 1. Problem Summary: What is the user's core issue in 1-2 sentences?
@@ -657,7 +668,7 @@ Think carefully and make the best decision for the user."""
         response = call_llm(prompt, max_tokens=512)
         
         # Parse YAML response
-        yaml_str = response.split("```yaml")[1].split("```")[0].strip() if "```yaml" in response else response
+        yaml_str = parse_yaml_response(response)
         decision = yaml.safe_load(yaml_str)
         
         # Validate decision
@@ -744,7 +755,7 @@ class GenerateAnswerNode(Node):
         confirmation_words = ["yes", "yeah", "yep", "correct", "right", "exactly", "that's it", "thats it"]
         is_confirmation = user_query.lower().strip() in confirmation_words
         
-        prompt = f"""You are a helpful IT support assistant for Stibo Systems.
+        prompt = f"""{SYSTEM_ROLE}
 
 USER'S CURRENT MESSAGE: "{user_query}"
 USER'S OPERATING SYSTEM: {user_os}
@@ -760,26 +771,28 @@ KNOWLEDGE BASE DOCUMENTS:
 2. **PROVIDE THE SOLUTION**: The knowledge base contains the answer. Extract the step-by-step solution and present it clearly.
 3. **BE DIRECT**: Don't say "since you said yes..." or reference their confirmation. Just provide the solution.
 4. **USE THE DOCS**: The solution is in the knowledge base. Use it!
-5. **OS AWARENESS**: The user is on {user_os}. If the knowledge base only has instructions for a DIFFERENT operating system (e.g., phone/Android/iOS when user is on Linux/Windows/Mac), acknowledge this mismatch. Say something like "I found instructions for [other OS], but I don't have {user_os}-specific documentation for this. Here's what I found which may help, or you can contact IT support for {user_os}-specific guidance."
+5. **OS AWARENESS**: {os_awareness_instruction(user_os)}
+6. **URLs**: {URL_RULES}
 
 ### WHAT NOT TO DO
 - DON'T say "However, since your current response is just 'yes'..."
 - DON'T ask for more clarification after user confirms
 - DON'T ignore the knowledge base content
 - DON'T give generic troubleshooting if docs have specific steps
-- DON'T present phone/mobile instructions as if they work for desktop OS without acknowledging the difference
+- DON'T start with "I found instructions for X but not Y" - just give the answer with a note at the end
+- DON'T repeat the OS disclaimer multiple times in the same response
 
 ### OUTPUT FORMAT (YAML)
 ```yaml
 action: <factual_response | step_by_step_instructions>
 confidence: <0.0-1.0>
 response_to_user: |
-    <Provide the actual solution from the knowledge base. If docs don't match user's OS, acknowledge this.>
+    <Provide the solution from the knowledge base. If OS mismatch, add a brief note at the END only.>
 ```"""
 
         answer = call_llm(prompt, max_tokens=512)
 
-        yaml_str = answer.split("```yaml")[1].split("```")[0].strip() if "```yaml" in answer else answer
+        yaml_str = parse_yaml_response(answer)
         decision = yaml.safe_load(yaml_str)
 
         logger.debug(f"Generated answer: {len(decision)} chars")
@@ -791,9 +804,7 @@ response_to_user: |
         
         if "rate limit" in str(exc).lower():
             return {
-                "response_to_user": "I'm currently experiencing high API usage. However, based on the available documentation, "
-                    "I can see information related to your query. Please try again in a few minutes, "
-                    "or contact IT support directly for immediate assistance.",
+                "response_to_user": RATE_LIMIT_WITH_DOCS_MESSAGE,
                 "confidence": 0.3
             }
         
@@ -807,8 +818,7 @@ response_to_user: |
             }
         
         return {
-            "response_to_user": "I'm having trouble generating a response right now. "
-                "Please contact IT support for direct assistance with your query.",
+            "response_to_user": GENERIC_ERROR_MESSAGE,
             "confidence": 0.1
         }
     
@@ -895,6 +905,8 @@ Conversation History:
 ### YOUR ROLE
 Ask a clarifying question to narrow down the user's specific issue.
 
+{COMMON_ASSUMPTIONS}
+
 ### CRITICAL RULES
 1. **NEVER mention document names, article titles, or filenames** - the user doesn't care about these
 2. **DESCRIBE the symptoms/issues** you found in docs to help user identify their problem
@@ -905,11 +917,9 @@ Ask a clarifying question to narrow down the user's specific issue.
 ### GOOD EXAMPLES
 - "Are you seeing a 'No connections' error when trying to view other users' calendars in Outlook?"
 - "Is Outlook showing connection issues only for shared calendars, or also for your own email?"
+- "What error message are you seeing when you try to connect?"
 
-### BAD EXAMPLES (NEVER DO THIS)
-- "...similar to the problem in the Outlook Calendar article?" ❌
-- "...as described in document XYZ?" ❌
-- "...like in the No-connections guide?" ❌
+{CLARIFY_BAD_EXAMPLES}
 
 If the user asks what OS they are using, respond: "You are using {user_os}"
 
@@ -925,7 +935,7 @@ response_to_user: |
 
         question = call_llm(prompt, max_tokens=200)  # Shorter for clarification
         
-        yaml_str = question.split("```yaml")[1].split("```")[0].strip() if "```yaml" in question else question
+        yaml_str = parse_yaml_response(question)
         decision = yaml.safe_load(yaml_str)
 
         return decision
@@ -935,8 +945,8 @@ response_to_user: |
         logger.error(f"Clarifying question generation failed: {exc}")
         # Generic fallback based on context
         if "rate limit" in str(exc).lower():
-            return "I'm experiencing high load right now. Could you please provide more details about your issue so I can help you better?"
-        return "Could you please provide more details about your issue?"
+            return f"{RATE_LIMIT_MESSAGE} {GENERIC_CLARIFY_MESSAGE}"
+        return GENERIC_CLARIFY_MESSAGE
     
     def post(self, shared: Dict, prep_res: Dict, exec_res: Any) -> str:
         """Write clarifying question to response and preserve active topic."""
@@ -1061,15 +1071,13 @@ Failed Attempts:
 {chr(10).join(f"- {step}" for step in context['failed_steps'][-3:]) if context['failed_steps'] else 'None'}
 
 ### YOUR ROLE
-You are an intelligent troubleshooting assistant for Stibo Systems. Your job is to:
+You are an intelligent troubleshooting assistant for {COMPANY_NAME}. Your job is to:
 1. **Detect user intent changes** - recognize if user wants to exit troubleshooting, ask something else, or continue
 2. **Provide diagnostic reasoning** - think like a systems engineer, not a script reader
 3. **Adapt dynamically** - learn from failed steps and adjust your approach
 4. **Know when to escalate** - recognize unsolvable issues and recommend human intervention
 
-### ASSUMPTIONS
-- Assume the user is in the Stibo Systems office environment.
-- Prioritize office network troubleshooting steps (e.g., "Check if you are connected to 'Stibo-Corp' wifi") over home networking steps.
+{COMMON_ASSUMPTIONS}
 
 ### AVAILABLE ACTIONS
 [1] continue_troubleshoot
@@ -1148,7 +1156,7 @@ Think like a senior systems engineer who teaches while troubleshooting."""
         response = call_llm(prompt, max_tokens=768)
         
         # Parse YAML response
-        yaml_str = response.split("```yaml")[1].split("```")[0].strip() if "```yaml" in response else response
+        yaml_str = parse_yaml_response(response)
         decision = yaml.safe_load(yaml_str)
         
         # Validate decision
