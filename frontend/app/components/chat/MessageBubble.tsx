@@ -2,12 +2,41 @@
 import { useState, ReactNode } from "react";
 import type { Message } from "../../types/chat";
 
-// Convert URLs in text to clickable links
-function linkifyText(text: string): ReactNode[] {
+// Parse markdown bold (**text**) and convert to <strong> elements
+function parseMarkdownBold(text: string): ReactNode[] {
+  const boldRegex = /\*\*([^*]+)\*\*/g;
+  const parts: ReactNode[] = [];
+  let lastIndex = 0;
+  let match;
+
+  while ((match = boldRegex.exec(text)) !== null) {
+    // Add text before the match
+    if (match.index > lastIndex) {
+      parts.push(text.slice(lastIndex, match.index));
+    }
+    // Add the bold text
+    parts.push(
+      <strong key={`bold-${match.index}`} className="font-semibold">
+        {match[1]}
+      </strong>
+    );
+    lastIndex = match.index + match[0].length;
+  }
+
+  // Add remaining text
+  if (lastIndex < text.length) {
+    parts.push(text.slice(lastIndex));
+  }
+
+  return parts.length > 0 ? parts : [text];
+}
+
+// Convert URLs in text to clickable links, preserving bold formatting
+function formatText(text: string): ReactNode[] {
   const urlRegex = /(https?:\/\/[^\s<>"{}|\\^`[\]]+)/g;
   const parts = text.split(urlRegex);
 
-  return parts.map((part, index) => {
+  return parts.flatMap((part, index) => {
     if (urlRegex.test(part)) {
       // Reset regex lastIndex since we're reusing it
       urlRegex.lastIndex = 0;
@@ -22,21 +51,21 @@ function linkifyText(text: string): ReactNode[] {
         url = url.slice(0, -trailing.length);
       }
 
-      return (
-        <span key={index}>
-          <a
-            href={url}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-blue-600 hover:text-blue-800 underline break-all"
-          >
-            {url}
-          </a>
-          {trailing}
-        </span>
-      );
+      return [
+        <a
+          key={`link-${index}`}
+          href={url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-blue-600 hover:text-blue-800 underline break-all"
+        >
+          {url}
+        </a>,
+        trailing,
+      ].filter(Boolean);
     }
-    return part;
+    // Parse bold markdown in non-URL parts
+    return parseMarkdownBold(part);
   });
 }
 
@@ -168,7 +197,7 @@ export function MessageBubble({
         }`}
       >
         <div className="leading-relaxed whitespace-pre-wrap wrap-break-word">
-          {isUser ? message.content : linkifyText(message.content)}
+          {isUser ? message.content : formatText(message.content)}
         </div>
         {message.role === "assistant" && message.responseType && (
           <div className="flex gap-3 mt-2.5 text-xs text-slate-600 flex-wrap items-center">
