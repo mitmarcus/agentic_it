@@ -1245,11 +1245,12 @@ Think like a senior systems engineer who teaches while troubleshooting."""
         else:  # continue_troubleshoot
             # Update troubleshooting state
             if "troubleshoot_state" not in shared:
+                intent_value = prep_res.get("intent", "") if isinstance(prep_res.get("intent"), str) else prep_res.get("intent", {}).get("intent", "")
                 shared["troubleshoot_state"] = {
                     "current_step": 0,
                     "steps_completed": [],
                     "failed_steps": [],
-                    "issue_type": prep_res.get("intent", {}).get("intent", "")
+                    "issue_type": intent_value
                 }
             
             ts_state = shared["troubleshoot_state"]
