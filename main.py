@@ -319,8 +319,6 @@ async def process_query(request: QueryRequest):
             "user_query": request.query,
             "timestamp": datetime.now().isoformat(),
             "turn_count": turn_count,
-            "status_results": {},
-            "response": {}
         }
 
         # If this is the start of the conversation, query the status page
