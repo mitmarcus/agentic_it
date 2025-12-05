@@ -407,7 +407,8 @@ analyze the context and decide the next action to help the employee in our offic
     - Issue requires administrative privileges or physical access
     - Problem is complex and spans multiple systems
     - User has already attempted basic troubleshooting without success
-       
+    - User indicates their problem is fixed (e.g. "it works", "that fixed it", "I figured it out")
+
 6.  clarify
     Description: Ask user for specific details to better understand the problem
     When to use:
@@ -423,7 +424,7 @@ analyze the context and decide the next action to help the employee in our offic
 - If user message contains explicit error codes, logs, or attachments → troubleshoot (unless 'search_kb' finds an exact-match).
 - If intent = troubleshooting + no workflow started → troubleshoot (or answer if we have the document)
 - If user explicitly requests 'talk to human', 'create ticket', or 'escalate', choose 'create_ticket'.
-- Use 'create_ticket' after other resolution paths ('search_kb', troubleshoot) are exhausted or if the issue requires privileges/physical access.
+- Use 'create_ticket' after other resolution paths ('search_kb', troubleshoot) are exhausted, if the issue requires privileges/physical access, or if the issue is resolved.
 - If the same document keep appearing in searches, do not search again. 'answer' with the best information you have.
 - Attempt resolution first unless user demands escalation.
 - Keep responses concise and actionable
@@ -439,6 +440,7 @@ thinking: |
 action: <action_name>
 reasoning: <why you chose this action in one sentence>
 confidence: <0.0 to 1.0>
+issue_fixed: <true or false - true if the user confirmed problem is fixed>
 ```
 
 Think carefully and make the best decision for the user."""
@@ -1306,6 +1308,9 @@ class TicketCreationNode(Node):
         
         # Check if ticket already exists
         existing_ticket = find_existing_ticket(shared, history)
+
+        # check if issue was fixed during troubleshooting
+        fixed = shared.get("decision", {}).get("issue_fixed")
         
         # get current troubleshooting state
         ts_state = shared.get("troubleshoot_state", {})
@@ -1332,7 +1337,8 @@ class TicketCreationNode(Node):
             "steps_completed": ts_state.get("steps_completed", []),
             "failed_steps": ts_state.get("failed_steps", []),
             "issue_type": ts_state.get("issue_type", ""),
-            "existing_ticket": existing_ticket
+            "existing_ticket": existing_ticket,
+            "issue_fixed": fixed
         }
 
     def exec(self, context: Dict) -> Dict:
@@ -1357,6 +1363,8 @@ class TicketCreationNode(Node):
     Failed Attempts:
     {chr(10).join(f"- {step}" for step in context['failed_steps'][-3:]) if context['failed_steps'] else 'None'}
 
+    Issue fixed during troubleshooting: {context['issue_fixed']}
+
     ### YOUR ROLE
     You are an intelligent tech support assistant. Your job is to create a detailed support ticket for the user's issue, the troubleshooting steps taken so far in the provided conversation, and relevant context.
 
@@ -1370,6 +1378,7 @@ class TicketCreationNode(Node):
 
     ```json
     {{
+        "fixed": {str(context['issue_fixed']).lower()},
         "project": "AI Service Desk",
         "issue_type": "IT Help",
         "request_type": "IT Help - Detailed",
@@ -1398,16 +1407,14 @@ class TicketCreationNode(Node):
                 response_text = str(llm_response)
                 logger.info(f"LLM response received: {response_text[:200]}...")
             
-            # Parse the ticket JSON from the response
             ticket = None
             
             try:
-                # Try to find JSON in response
                 m = re.search(r'```json\s*(\{[\s\S]*?\})\s*```', response_text)
                 if m:
                     json_str = m.group(1)
                 else:
-                    # Fallback: try to find any JSON object
+                    # try to find any JSON object
                     m = re.search(r'(\{[\s\S]*\})', response_text)
                     if m:
                         logger.info("Found JSON in response (no code block)")
@@ -1416,7 +1423,7 @@ class TicketCreationNode(Node):
                         json_str = None
                 
                 if json_str:
-                    # Clean the JSON string to handle control characters
+                    # clean
                     ticket = json.loads(json_str)
                             
             except json.JSONDecodeError as e:
@@ -1431,7 +1438,6 @@ class TicketCreationNode(Node):
             
             logger.info(f"Ticket created successfully: {ticket.get('summary', 'N/A')}")
 
-            # write_ticket now returns a dict with status
             result = write_ticket(
                 ticket, 
                 filename=ticket.get("summary", "ticket").replace(" ", "_") + ".json", 
@@ -1478,49 +1484,78 @@ class TicketCreationNode(Node):
         status = exec_res.get("status")
         ticket_link = exec_res.get("ticket_link", "")
         message = exec_res.get("message", "")
+        issue_fixed = prep_res.get("issue_fixed", False)
 
-        # Store ticket link in shared for future checks
+        # store link in case user asks again
         if ticket_link:
             shared["ticket_link"] = ticket_link
             logger.info(f"Ticket link stored: {ticket_link}")
 
-        # Set up response
         if "response" not in shared:
             shared["response"] = {}
         
-        # Handle different statuses
+        # handle different statuses
         if status == "already_exists":
-            shared["response"]["text"] = (
-                f"I found that a ticket was already created for this issue.\n\n"
-                f"{ticket_link}\n\n"
-                f"Our support team will review this and get back to you shortly. "
-                f"If you have additional information, please let me know."
-            )
-            shared["response"]["action_taken"] = "ticket_exists"
-            shared["response"]["requires_followup"] = False
-            
+            if issue_fixed:
+                shared["response"]["text"] = (
+                    f"I found that I already created a documentation ticket for this resolved issue.\n\n"
+                    f"{ticket_link}\n\n"
+                    f"The ticket has been closed since your issue was resolved. "
+                    f"If you have any other questions, feel free to ask!"
+                )
+                shared["response"]["action_taken"] = "ticket_exists_resolved"
+                shared["response"]["requires_followup"] = False
+            else:
+                shared["response"]["text"] = (
+                    f"I found that a ticket was already created for this issue.\n\n"
+                    f"{ticket_link}\n\n"
+                    f"Our support team will review this and get back to you shortly. "
+                    f"If you have additional information, please let me know."
+                )
+                shared["response"]["action_taken"] = "ticket_exists"
+                shared["response"]["requires_followup"] = True
+
         elif status == "jira_unavailable":
-            shared["response"]["text"] = (
-                f"I was unable to connect to our ticketing system at this time. "
-                f"However, I've saved your issue details locally.\n\n"
-                f"{ticket_link}\n\n"
-                f"Please contact IT support directly, or try creating a ticket again later. "
-                f"I can help you with other questions in the meantime."
-            )
-            shared["response"]["action_taken"] = "ticket_saved_locally"
-            shared["response"]["requires_followup"] = True
+            if issue_fixed:
+                shared["response"]["text"] = (
+                    f"I'm glad I could help resolve your issue! "
+                    f"I've saved a documentation ticket locally for future reference.\n\n"
+                    f"{ticket_link}\n\n"
+                    f"If you have any other questions, feel free to ask!"
+                )
+                shared["response"]["action_taken"] = "create_resolved_ticket_local"
+                shared["response"]["requires_followup"] = False
+            else:
+                shared["response"]["text"] = (
+                    f"I was unable to connect to our ticketing system at this time. "
+                    f"However, I've saved your issue details locally.\n\n"
+                    f"{ticket_link}\n\n"
+                    f"Please contact IT support directly, or try creating a ticket again later. "
+                    f"I can help you with other questions in the meantime."
+                )
+                shared["response"]["action_taken"] = "ticket_saved_locally"
+                shared["response"]["requires_followup"] = True
             
         elif status == "success":
-            shared["response"]["text"] = (
-                f"I've created a support ticket for your issue.\n\n"
-                f"Ticket Link: {ticket_link}\n\n"
-                f"Our support team will review this and get back to you shortly."
-            )
-            shared["response"]["action_taken"] = "create_ticket"
-            shared["response"]["requires_followup"] = True
+            if issue_fixed:
+                shared["response"]["text"] = (
+                    f"I'm glad I could help resolve your issue! I've created a documentation ticket that has been automatically closed.\n\n"
+                    f"Ticket Link: {ticket_link}\n"
+                    f"This ticket documents the solution for future reference. "
+                    f"If you have any other questions, feel free to ask!"
+                )
+                shared["response"]["action_taken"] = "create_resolved_ticket"
+                shared["response"]["requires_followup"] = False
+            else:
+                shared["response"]["text"] = (
+                    f"I've created a support ticket for your issue.\n\n"
+                    f"Ticket Link: {ticket_link}\n\n"
+                    f"Our support team will review this and get back to you shortly."
+                )
+                shared["response"]["action_taken"] = "create_ticket"
+                shared["response"]["requires_followup"] = True
             
         else:
-            # Unknown status - provide generic message
             logger.warning(f"Unknown ticket status: {status}")
             shared["response"]["text"] = (
                 f"I've processed your ticket request.\n\n"
