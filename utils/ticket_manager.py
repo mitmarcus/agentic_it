@@ -39,16 +39,12 @@ def create_jira_issue(ticket: Dict) -> str:
         }
     }
     
-    # Set up authentication
-    auth = HTTPBasicAuth(os.getenv("AIS_USER"), os.getenv("PASSWORD"))
-    
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {os.getenv('AIS_API_TOKEN')}"
     }
      
     try:
-        # Make the API request
         response = requests.post(
             url,
             headers=headers,
@@ -58,11 +54,13 @@ def create_jira_issue(ticket: Dict) -> str:
         # Check if request was successful
         response.raise_for_status()
         
-        # Parse and return the response
         issue_info = response.json()
         print(f"✓ Issue created successfully!")
         print(f"  Issue Key: {issue_info['key']}")
         print(f"  Issue URL: {os.getenv("JIRA_URL")}/browse/{issue_info['key']}")
+
+        if ticket.get("fixed"):
+            close_issue(issue_info['key'])
         
         return issue_info
         
@@ -84,10 +82,6 @@ def add_attachment(log_file: Path, issue_key: str) -> bool:
     """
     url = f"{os.getenv("JIRA_URL")}/rest/api/2/issue/{issue_key}/attachments"
     
-    # Set up authentication
-    auth = HTTPBasicAuth(os.getenv("AIS_USER"), os.getenv("PASSWORD"))
-    
-    # Set headers
     headers = {
         "X-Atlassian-Token": "no-check",
         "Authorization": f"Bearer {os.getenv('AIS_API_TOKEN')}"
@@ -100,12 +94,10 @@ def add_attachment(log_file: Path, issue_key: str) -> bool:
             }
             response = requests.post(
                 url,
-                auth=auth,
                 headers=headers,
                 files=files
             )
         
-        # Check if request was successful
         response.raise_for_status()
         
         print(f"✓ Attachment '{log_file.name}' added to issue {issue_key} successfully!")
@@ -142,7 +134,6 @@ def write_ticket(
     log_filename = file_path.stem + "_log.txt"
     log_path = out_path / log_filename
 
-    # Always create local backup files
     with file_path.open("w", encoding="utf-8") as f:
         json.dump(ticket, f, indent=2)
 
@@ -154,11 +145,9 @@ def write_ticket(
                 content = msg.get("content", "") or ""
                 log_f.write(f"{role}:\n{content}\n\n")
 
-    # Attempt Jira creation with fallback
     jira_result = create_jira_issue(ticket)
     
     if jira_result and jira_result.get("key"):
-        # Success - add attachment and return Jira link
         add_attachment(log_path, jira_result["key"])
         jira_link = f"{os.getenv('JIRA_URL')}/browse/{jira_result['key']}"
         return {
@@ -167,8 +156,7 @@ def write_ticket(
             "message": f"Ticket created successfully: {jira_result['key']}"
         }
     else:
-        # Jira API failed - return local file path as fallback
-        print(f"⚠️ Jira creation failed, ticket saved locally: {file_path}")
+        print(f"Jira creation failed, ticket saved locally: {file_path}")
         return {
             "status": "jira_unavailable",
             "ticket_link": f"Local ticket saved: {file_path.name}",
@@ -177,7 +165,6 @@ def write_ticket(
 
 def find_existing_ticket(shared: Dict, history: List[Dict]) -> str:
     """Return existing ticket link if found in shared store or conversation history, else None."""
-    # Check shared store first
     if shared.get("ticket_link"):
         return {
             "status": "already_exists",
@@ -185,13 +172,13 @@ def find_existing_ticket(shared: Dict, history: List[Dict]) -> str:
             "message": "A ticket was already created for this conversation"
         }
 
-    # Scan assistant messages for ticket links or creation phrases
+    # scans bot msgs
     for msg in reversed(history):
         if msg.get("role") != "assistant":
             continue
         content = msg.get("content", "") or ""
         
-        # Look for Jira ticket links (both browse and direct URLs)
+        # checks for jira ticket
         jira_url_pattern = r'(https?://[^\s]+/browse/[A-Z]+-\d+|Ticket Link: https?://[^\s]+/browse/[A-Z]+-\d+)'
         ticket_link_match = re.search(jira_url_pattern, content)
         
@@ -203,7 +190,7 @@ def find_existing_ticket(shared: Dict, history: List[Dict]) -> str:
                 "message": "A ticket was already created for this issue"
             }
         
-        # Look for local ticket creation phrase
+        # checks for local ticket
         elif "Local ticket saved:" in content:
             local_match = re.search(r'Local ticket saved: ([^\s\(]+)', content)
             if local_match:
@@ -214,6 +201,51 @@ def find_existing_ticket(shared: Dict, history: List[Dict]) -> str:
                 }
 
     return None
+
+def close_issue(ticket_id: str) -> str:
+    """
+    Close the Jira issue with the specified ticket ID.
+    Returns True if successful, False otherwise.
+    """
+    url = f"{os.getenv("JIRA_URL")}/rest/api/2/issue/{ticket_id}/transitions"
+    
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {os.getenv('AIS_API_TOKEN')}"
+    }
+    
+    transition_data = {
+        "transition": {
+            "id": "801"
+        },
+        "fields": {
+            "resolution": {
+                "name": "Auto-closed"
+            }
+        }
+    }
+    
+    try:
+        response = requests.post(
+            url,
+            headers=headers,
+            data=json.dumps(transition_data)
+        )
+        response.raise_for_status()
+        
+        print(f"✓ Issue {ticket_id} closed successfully!")
+        return True
+        
+    except requests.exceptions.HTTPError as e:
+        print(f"✗ HTTP Error: {e}")
+        print(f"  Response: {response.text}")
+        return False
+    except requests.exceptions.RequestException as e:
+        print(f"✗ Request Error: {e}")
+        return False
+    except Exception as e:
+        print(f"✗ Unexpected Error: {e}")
+        return False
 
 def main():
     """
