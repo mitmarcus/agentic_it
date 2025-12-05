@@ -517,6 +517,10 @@ class DecisionMakerNode(Node):
         search_count = shared.get("search_count", 0)
         max_searches = _get_int_env("AGENT_MAX_TURNS")
         
+        # Check if we're in an active troubleshooting session
+        troubleshoot_state = shared.get("troubleshoot_state", {})
+        in_troubleshoot = bool(troubleshoot_state) and not troubleshoot_state.get("escalated", False)
+        
         return {
             "user_query": shared.get("user_query", ""),
             "user_os": shared.get("user_os", "unknown"),
@@ -529,7 +533,9 @@ class DecisionMakerNode(Node):
             "workflow_status": workflow_status,
             "turn_count": shared.get("turn_count", 0),
             "search_count": search_count,
-            "max_searches": max_searches
+            "max_searches": max_searches,
+            "in_troubleshoot": in_troubleshoot,
+            "troubleshoot_step": troubleshoot_state.get("current_step", 0)
         }
     
     def exec(self, context: Dict) -> Dict:
@@ -707,6 +713,12 @@ Think carefully and make the best decision for the user."""
     def post(self, shared: Dict, prep_res: Dict, exec_res: Dict) -> str:
         """Write decision and return action."""
         shared["decision"] = exec_res
+        
+        # If we're in an active troubleshooting session, continue with troubleshoot node
+        # to let it handle user responses (confirmations, "it's fixed", etc.)
+        if prep_res.get("in_troubleshoot", False):
+            logger.info(f"In active troubleshooting session (step {prep_res.get('troubleshoot_step', 0)}), routing to troubleshoot node")
+            return "troubleshoot"
         
         # Track search attempts to prevent infinite loops
         if exec_res["action"] == "search_kb":
