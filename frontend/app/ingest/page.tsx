@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { getJSON } from "../lib/api";
+import { getJSON, API_BASE_URL } from "../lib/api";
 import { StatsCard, type HealthStatus } from "./components/StatsCard";
 import { FileUpload } from "../components/upload/FileUpload";
 
@@ -72,12 +72,9 @@ export default function IngestPage() {
     setDeletingDoc(sourceFile);
     try {
       const encodedPath = encodeURIComponent(sourceFile);
-      const response = await fetch(
-        `http://localhost:8000/documents/${encodedPath}`,
-        {
-          method: "DELETE",
-        }
-      );
+      const response = await fetch(`${API_BASE_URL}/documents/${encodedPath}`, {
+        method: "DELETE",
+      });
 
       if (!response.ok) {
         throw new Error(`Failed to delete document: ${response.statusText}`);

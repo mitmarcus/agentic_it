@@ -297,6 +297,13 @@ async def process_query(request: QueryRequest):
         HTTPException: If query processing fails
     """
     try:
+        # Validate query length
+        if len(request.query) > 10000:
+            raise HTTPException(
+                status_code=400, 
+                detail="Query too long. Maximum length is 10,000 characters."
+            )
+        
         # Generate or use provided session ID
         session_id = request.session_id or str(uuid.uuid4())
         user_id = request.user_id or "anonymous"
@@ -701,6 +708,13 @@ async def delete_document(source_file: str):
     """
     try:
         from utils.chromadb_client import delete_documents_by_source
+        
+        # Validate source_file parameter
+        if not source_file or len(source_file.strip()) == 0:
+            raise HTTPException(status_code=400, detail="source_file parameter is required")
+        
+        if len(source_file) > 1000:
+            raise HTTPException(status_code=400, detail="source_file parameter too long")
         
         logger.info(f"Deleting document: {source_file}")
         
