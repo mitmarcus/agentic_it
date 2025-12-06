@@ -11,6 +11,9 @@ import yaml
 from typing import Any, Dict, List
 from cremedelacreme import AsyncNode, Node, BatchNode
 
+# Import core configuration
+from core.llm_config import get_llm_config
+
 # Import utilities
 from utils.call_llm_groq import call_llm
 from utils.embedding_local import get_embedding
@@ -211,7 +214,8 @@ class EmbedQueryNode(Node):
     
     def __init__(self):
         # Retry 3 times if embedding fails
-        super().__init__(max_retries=3, wait=1)
+        config = get_llm_config()
+        super().__init__(max_retries=config.max_retries, wait=config.retry_wait)
     
     def prep(self, shared: Dict) -> Dict:
         """Read user query, keywords, conversation context, and active topic."""
@@ -379,7 +383,8 @@ class SearchKnowledgeBaseNode(Node):
     """
     
     def __init__(self):
-        super().__init__(max_retries=2, wait=1)
+        config = get_llm_config()
+        super().__init__(max_retries=config.max_retries, wait=config.retry_wait)
     
     def prep(self, shared: Dict) -> Dict:
         """Read query embedding and text."""
@@ -499,7 +504,8 @@ class DecisionMakerNode(Node):
     """Agent node that decides which action to take next."""
     
     def __init__(self):
-        super().__init__(max_retries=3, wait=2)
+        config = get_llm_config()
+        super().__init__(max_retries=config.max_retries, wait=config.retry_wait)
     
     def prep(self, shared: Dict) -> Dict:
         """Gather all context for decision making."""
@@ -678,7 +684,8 @@ confidence: <0.0 to 1.0>
 
 Think carefully and make the best decision for the user."""
 
-        response = call_llm(prompt, max_tokens=512)
+        config = get_llm_config()
+        response = call_llm(prompt, max_tokens=config.max_tokens)
         
         # Parse YAML response
         yaml_str = parse_yaml_response(response)
@@ -749,7 +756,8 @@ class GenerateAnswerNode(Node):
     """Generate final answer using RAG context."""
     
     def __init__(self):
-        super().__init__(max_retries=3, wait=2)
+        config = get_llm_config()
+        super().__init__(max_retries=config.max_retries, wait=config.retry_wait)
     
     def prep(self, shared: Dict) -> Dict:
         """Read query, context, and history."""
@@ -809,7 +817,8 @@ response_to_user: |
     <Provide the solution from the knowledge base. If OS mismatch, add a brief note at the END only.>
 ```"""
 
-        answer = call_llm(prompt, max_tokens=512)
+        config = get_llm_config()
+        answer = call_llm(prompt, max_tokens=config.max_tokens)
 
         yaml_str = parse_yaml_response(answer)
         decision = yaml.safe_load(yaml_str)
@@ -876,7 +885,8 @@ class AskClarifyingQuestionNode(Node):
     """Ask user for more details when query is ambiguous, using retrieved docs for context."""
     
     def __init__(self):
-        super().__init__(max_retries=2, wait=1)
+        config = get_llm_config()
+        super().__init__(max_retries=config.max_retries, wait=config.retry_wait)
     
     def prep(self, shared: Dict) -> Dict:
         """Read query, intent, retrieved docs, and conversation history."""
@@ -951,7 +961,8 @@ response_to_user: |
 ```
 """
 
-        question = call_llm(prompt, max_tokens=200)  # Shorter for clarification
+        config = get_llm_config()
+        question = call_llm(prompt, max_tokens=config.max_tokens)  # Shorter for clarification
         
         yaml_str = parse_yaml_response(question)
         decision = yaml.safe_load(yaml_str)
@@ -1036,7 +1047,8 @@ class InteractiveTroubleshootNode(Node):
     """Provide interactive troubleshooting guidance."""
     
     def __init__(self):
-        super().__init__(max_retries=2, wait=1)
+        config = get_llm_config()
+        super().__init__(max_retries=config.max_retries, wait=config.retry_wait)
     
     def prep(self, shared: Dict) -> Dict:
         """Gather context for troubleshooting."""
@@ -1171,7 +1183,8 @@ next_hypothesis: <your working theory about root cause, or null if exiting>
 
 Think like a senior systems engineer who teaches while troubleshooting."""
 
-        response = call_llm(prompt, max_tokens=768)
+        config = get_llm_config()
+        response = call_llm(prompt, max_tokens=config.max_tokens)
         
         # Parse YAML response
         yaml_str = parse_yaml_response(response)
@@ -1436,7 +1449,8 @@ class EmbedDocumentsNode(Node):
     """
     
     def __init__(self):
-        super().__init__(max_retries=3, wait=1)
+        config = get_llm_config()
+        super().__init__(max_retries=config.max_retries, wait=config.retry_wait)
     
     def prep(self, shared: Dict) -> List[Dict]:
         """Read chunks from shared store."""
@@ -1469,7 +1483,8 @@ class StoreInChromaDBNode(Node):
     """Store chunks and embeddings in ChromaDB."""
     
     def __init__(self):
-        super().__init__(max_retries=2, wait=1)
+        config = get_llm_config()
+        super().__init__(max_retries=config.max_retries, wait=config.retry_wait)
     
     def prep(self, shared: Dict) -> Dict:
         """Read chunks and embeddings."""
