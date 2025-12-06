@@ -29,6 +29,7 @@ ENV PYTHONUNBUFFERED=1 \
 
 # Copy application code
 COPY utils/ ./utils/
+COPY core/ ./core/
 COPY cremedelacreme/ ./cremedelacreme/
 COPY langfuse_tracing/ ./langfuse_tracing/
 COPY nodes.py .
