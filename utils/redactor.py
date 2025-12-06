@@ -7,14 +7,14 @@ from typing import Pattern
 # Default configuration
 _DEFAULT_REPLACEMENT = "[REDACTED]"
 _ALL_PATTERN_NAMES = (
-    "api_key", "password_field", "token", "aws_key", "private_key"
+    "api_key", "password_field", "token", "private_key"
 )
 
 # Sensitive dictionary keys (case-insensitive)
 _SENSITIVE_KEYS = {
     "password", "passwd", "pwd", "secret", "api_key", "apikey",
     "token", "access_token", "refresh_token", "auth_token",
-    "private_key", "privatekey", "client_secret", "aws_secret_access_key"
+    "private_key", "privatekey", "client_secret",
 }
 
 # Redaction patterns
@@ -22,7 +22,6 @@ PATTERNS: dict[str, Pattern] = {
     "api_key": re.compile(r'\b[A-Za-z0-9]{32,}\b'),
     "password_field": re.compile(r'(?i)(password|pwd|passwd|pass)\s*(?:is|:|\=)\s*[\w\d]+'),
     "token": re.compile(r'(?i)(token|bearer)\s*[:=]?\s*[A-Za-z0-9\-._~+/]+=*'),
-    "aws_key": re.compile(r'(?i)(aws_access_key_id|aws_secret_access_key)\s*[:=]\s*[A-Za-z0-9/+=]+'),
     "private_key": re.compile(r'-----BEGIN (?:RSA |EC )?PRIVATE KEY-----[\s\S]+?-----END (?:RSA |EC )?PRIVATE KEY-----'),
 }
 
@@ -189,7 +188,6 @@ if __name__ == "__main__":
     User report:
     I tried to login with password=MySecret123 but got an error.
     Here's my API key: abcdef1234567890abcdef1234567890
-    AWS credentials: aws_access_key_id=AKIAIOSFODNN7EXAMPLE
     """
     
     print("\nOriginal text:")
