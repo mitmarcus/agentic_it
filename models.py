@@ -13,10 +13,10 @@ from pydantic import BaseModel, Field
 
 class QueryRequest(BaseModel):
     """Request model for chat queries."""
-    query: str = Field(..., description="User's question or request", min_length=1)
-    session_id: Optional[str] = Field(None, description="Optional session ID for conversation continuity")
-    user_id: Optional[str] = Field(None, description="Optional user identifier")
-    user_os: Optional[str] = Field(None, description="User's operating system (Windows, macOS, Linux, etc.)")
+    query: str = Field(..., description="User's question or request", min_length=1, max_length=10000)
+    session_id: Optional[str] = Field(None, description="Optional session ID for conversation continuity", max_length=100)
+    user_id: Optional[str] = Field(None, description="Optional user identifier", max_length=100)
+    user_os: Optional[str] = Field(None, description="User's operating system (Windows, macOS, Linux, etc.)", max_length=100)
 
     model_config = {
         "json_schema_extra": {

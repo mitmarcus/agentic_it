@@ -35,6 +35,17 @@ export async function postFormData<TRes = any>(path: string, formData: FormData)
   return res.json();
 }
 
+export async function deleteJSON<TRes = any>(path: string): Promise<TRes> {
+  const res = await fetch(`${API_BASE_URL}${path}`, {
+    method: "DELETE",
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Request failed ${res.status}: ${text}`);
+  }
+  return res.json();
+}
+
 // Feedback API
 export async function submitFeedback(
   sessionId: string,
