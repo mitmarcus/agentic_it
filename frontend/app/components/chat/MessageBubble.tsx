@@ -36,7 +36,7 @@ function formatText(text: string): ReactNode[] {
   const urlRegex = /(https?:\/\/[^\s<>"{}|\\^`[\]]+)/g;
   const parts = text.split(urlRegex);
 
-  return parts.flatMap((part, index) => {
+  return parts.flatMap((part, index): ReactNode[] => {
     if (urlRegex.test(part)) {
       // Reset regex lastIndex since we're reusing it
       urlRegex.lastIndex = 0;
@@ -51,7 +51,7 @@ function formatText(text: string): ReactNode[] {
         url = url.slice(0, -trailing.length);
       }
 
-      return [
+      const result: ReactNode[] = [
         <a
           key={`link-${index}`}
           href={url}
@@ -61,8 +61,13 @@ function formatText(text: string): ReactNode[] {
         >
           {url}
         </a>,
-        trailing,
-      ].filter(Boolean);
+      ];
+
+      if (trailing) {
+        result.push(trailing);
+      }
+
+      return result;
     }
     // Parse bold markdown in non-URL parts
     return parseMarkdownBold(part);
@@ -75,18 +80,12 @@ function getResponseTypeLabel(type?: string) {
       return "💡 Answer";
     case "clarify":
       return "❓ Clarification";
-    case "search_kb":
-      return "📚 Documentation";
     case "troubleshoot":
       return "🔧 Troubleshooting";
     case "exit_troubleshoot":
       return "✅ Resolved";
     case "escalate":
       return "🚨 Escalated";
-    case "create_ticket":
-      return "🎫 Create Ticket";
-    case "search_tickets":
-      return "🔍 Search Tickets";
     case "not_implemented":
       return "⚠️ Not Available";
     default:
