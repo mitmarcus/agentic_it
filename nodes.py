@@ -283,10 +283,13 @@ class EmbedQueryNode(Node):
         embedding = get_embedding(enhanced_query)
         logger.debug(f"Generated embedding: {len(embedding)} dimensions")
         
+        # Log what was actually embedded (for debugging)
+        if enhanced_query != query:
+            logger.info(f"Embedded enhanced query: '{enhanced_query[:150]}...'")
+        
         return {
             "embedding": embedding,
-            "query_with_context": query_with_context if query_with_context != query else None,
-            "enhanced_query": enhanced_query if enhanced_query != query_with_context else None,
+            "enhanced_query": enhanced_query if enhanced_query != query else None,
             "is_follow_up": is_follow_up
         }
     
@@ -342,7 +345,6 @@ class EmbedQueryNode(Node):
         embed_dim = _RAG_CONFIG["embedding_dim"]
         return {
             "embedding": [0.0] * embed_dim,
-            "query_with_context": None,
             "enhanced_query": None,
             "is_follow_up": False
         }
@@ -352,13 +354,10 @@ class EmbedQueryNode(Node):
         shared["query_embedding"] = exec_res["embedding"]
         shared["is_follow_up"] = exec_res.get("is_follow_up", False)
         
-        # Store expansion info for debugging/logging
-        if exec_res.get("query_with_context"):
-            shared["query_with_context"] = exec_res["query_with_context"]
-            logger.debug(f"Query with context: {exec_res['query_with_context'][:100]}...")
+        # Store enhanced query for debugging if query was modified
         if exec_res.get("enhanced_query"):
             shared["enhanced_query"] = exec_res["enhanced_query"]
-            logger.debug(f"Query enhanced: {exec_res['enhanced_query'][:100]}...")
+            logger.debug(f"Query enhanced for embedding: {exec_res['enhanced_query'][:100]}...")
         
         return "default"
 
