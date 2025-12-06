@@ -3,7 +3,7 @@ Pydantic models for request/response validation.
 
 This module contains all the data models used by the FastAPI endpoints.
 """
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 from pydantic import BaseModel, Field
 
 
@@ -13,10 +13,10 @@ from pydantic import BaseModel, Field
 
 class QueryRequest(BaseModel):
     """Request model for chat queries."""
-    query: str = Field(..., description="User's question or request", min_length=1)
-    session_id: Optional[str] = Field(None, description="Optional session ID for conversation continuity")
-    user_id: Optional[str] = Field(None, description="Optional user identifier")
-    user_os: Optional[str] = Field(None, description="User's operating system (Windows, macOS, Linux, etc.)")
+    query: str = Field(..., description="User's question or request", min_length=1, max_length=10000)
+    session_id: Optional[str] = Field(None, description="Optional session ID for conversation continuity", max_length=100)
+    user_id: Optional[str] = Field(None, description="Optional user identifier", max_length=100)
+    user_os: Optional[str] = Field(None, description="User's operating system (Windows, macOS, Linux, etc.)", max_length=100)
 
     model_config = {
         "json_schema_extra": {
@@ -226,6 +226,78 @@ class HealthResponse(BaseModel):
                     "status": "healthy",
                     "timestamp": "2025-10-07T12:00:00",
                     "version": "1.0.0"
+                }
+            ]
+        }
+    }
+
+
+# ============================================================================
+# Feedback Models
+# ============================================================================
+
+class FeedbackRequest(BaseModel):
+    """Request model for submitting feedback."""
+    session_id: str = Field(..., description="Session ID from the original query")
+    query: str = Field(..., description="Original user query")
+    response: str = Field(..., description="Response that user is providing feedback on")
+    feedback_type: str = Field(..., description="Type of feedback: positive, negative, or neutral")
+    feedback_score: int = Field(0, description="Numeric score (-1 to 1, or 1-5 scale)", ge=-1, le=5)
+    feedback_comment: Optional[str] = Field(None, description="Optional user comment")
+    retrieved_doc_ids: Optional[List[str]] = Field(None, description="Document IDs used to generate this response")
+
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "session_id": "abc123",
+                    "query": "How do I reset my VPN password?",
+                    "response": "To reset your VPN password...",
+                    "feedback_type": "positive",
+                    "feedback_score": 1,
+                    "feedback_comment": "This was very helpful!"
+                }
+            ]
+        }
+    }
+
+
+class FeedbackResponse(BaseModel):
+    """Response model for feedback submission."""
+    feedback_id: str = Field(..., description="Unique ID for this feedback entry")
+    message: str = Field(..., description="Confirmation message")
+    timestamp: str = Field(..., description="Timestamp of feedback submission")
+
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "feedback_id": "fb_abc123def",
+                    "message": "Thank you for your feedback!",
+                    "timestamp": "2025-10-07T12:00:00"
+                }
+            ]
+        }
+    }
+
+
+class FeedbackStatsResponse(BaseModel):
+    """Response model for feedback statistics."""
+    total: int = Field(..., description="Total number of feedback entries")
+    positive: int = Field(..., description="Number of positive feedback entries")
+    negative: int = Field(..., description="Number of negative feedback entries")
+    neutral: int = Field(..., description="Number of neutral feedback entries")
+    positive_rate: float = Field(..., description="Percentage of positive feedback")
+
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "total": 100,
+                    "positive": 75,
+                    "negative": 15,
+                    "neutral": 10,
+                    "positive_rate": 0.75
                 }
             ]
         }

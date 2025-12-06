@@ -2,9 +2,9 @@ import asyncio
 from playwright.async_api import async_playwright
 from dotenv import load_dotenv
 import os
-import logging
+from utils.logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 async def autofill_sign_in(page, email: str, password: str):
     """
@@ -69,7 +69,7 @@ async def grab_status(page):
             try:
                 await content_locator.wait_for(state='visible', timeout=2000)
                 has_maintenance_content = True
-            except:
+            except Exception:
                 has_maintenance_content = False
                 print(f"No maintenance content found for: {title}")
             

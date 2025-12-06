@@ -1,12 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useCallback } from "react";
 import { ChatHeader } from "./components/chat/ChatHeader";
 import { MessageList } from "./components/chat/MessageList";
 import { ChatInput } from "./components/chat/ChatInput";
 import { StatusBar } from "./components/chat/StatusBar";
 import type { Message, ChatResponse } from "./types/chat";
-import { postJSON } from "./lib/api";
+import { postJSON, submitFeedback } from "./lib/api";
 import { getUserAgentInfo } from "./lib/userAgent";
 
 export default function Home() {
@@ -56,18 +56,30 @@ export default function Home() {
         setSessionId(data.session_id);
       }
 
-      const confidence = data.metadata?.intent?.confidence;
+      // Extract intent (now just a string) and decision confidence
+      const intentType = data.metadata?.intent;
+      const decisionConfidence = data.metadata?.decision?.confidence;
+      const retrievedDocIds = data.metadata?.retrieved_doc_ids;
+
       const assistantMessage: Message = {
         id: (Date.now() + 1).toString(),
         role: "assistant",
         content: data.response,
-        confidence: typeof confidence === "number" ? confidence : undefined,
+        intentType: typeof intentType === "string" ? intentType : undefined,
+        decisionConfidence:
+          typeof decisionConfidence === "number"
+            ? decisionConfidence
+            : undefined,
         responseType: data.action_taken,
         timestamp: Date.now(),
+        userQuery: text, // Store the original query for feedback
+        retrievedDocIds: retrievedDocIds, // Store doc IDs for feedback
       };
       setMessages((prev) => [...prev, assistantMessage]);
     } catch (error) {
-      console.error("Error sending message:", error);
+      if (process.env.NODE_ENV === "development") {
+        console.error("Error sending message:", error);
+      }
       const errorMessage: Message = {
         id: (Date.now() + 1).toString(),
         role: "assistant",
@@ -81,29 +93,35 @@ export default function Home() {
     }
   };
 
-  const getResponseTypeLabel = (type?: string) => {
-    switch (type) {
-      case "answer":
-        return "💡 Answer";
-      case "workflow":
-      case "clarify":
-        return "📋 Workflow";
-      case "link_docs":
-      case "search_kb":
-        return "📚 Documentation";
-      case "escalate":
-        return "🚨 Escalated";
-      default:
-        return "";
-    }
-  };
+  // Handle feedback submission
+  const handleFeedback = useCallback(
+    async (messageId: string, feedbackType: "positive" | "negative") => {
+      const message = messages.find((m) => m.id === messageId);
+      if (!message || !sessionId || !message.userQuery) return;
 
-  const getConfidenceColor = (confidence?: number) => {
-    if (!confidence) return "#94a3b8";
-    if (confidence >= 0.8) return "#16a34a";
-    if (confidence >= 0.6) return "#f97316";
-    return "#dc2626";
-  };
+      try {
+        await submitFeedback(
+          sessionId,
+          message.userQuery,
+          message.content,
+          feedbackType,
+          message.retrievedDocIds // doc IDs for feedback-aware retrieval
+        );
+
+        // Update message state to show feedback was received
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === messageId ? { ...m, feedback: feedbackType } : m
+          )
+        );
+      } catch (error) {
+        if (process.env.NODE_ENV === "development") {
+          console.error("Failed to submit feedback:", error);
+        }
+      }
+    },
+    [messages, sessionId]
+  );
 
   return (
     <main className="flex flex-col items-center p-8 sm:p-4 min-h-screen bg-gray-100">
@@ -111,7 +129,12 @@ export default function Home() {
         <ChatHeader />
 
         <div className="flex-1 flex flex-col overflow-hidden">
-          <MessageList messages={messages} isLoading={isLoading} />
+          <MessageList
+            messages={messages}
+            isLoading={isLoading}
+            sessionId={sessionId}
+            onFeedback={handleFeedback}
+          />
           <ChatInput isLoading={isLoading} onSend={onSend} />
         </div>
 
