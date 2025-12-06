@@ -156,7 +156,9 @@ export function FileUpload() {
 
       setUploadResult(result);
     } catch (error) {
-      console.error("Upload error:", error);
+      if (process.env.NODE_ENV === "development") {
+        console.error("Upload error:", error);
+      }
       setFiles((prev) =>
         prev.map((f) =>
           f.status === "uploading"
@@ -180,9 +182,7 @@ export function FileUpload() {
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-center justify-between">
-        <h2 className="text-2xl font-bold text-gray-800">
-          Upload Documents
-        </h2>
+        <h2 className="text-2xl font-bold text-gray-800">Upload Documents</h2>
         {files.length > 0 && (
           <button
             onClick={clearAll}
