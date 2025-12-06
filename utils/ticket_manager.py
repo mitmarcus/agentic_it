@@ -5,12 +5,12 @@ import uuid
 import datetime
 import re
 from pathlib import Path
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Any
 import os
 import requests
 from requests.auth import HTTPBasicAuth
 
-def create_jira_issue(ticket: Dict) -> str:
+def create_jira_issue(ticket: Dict) -> Optional[Dict[str, Any]]:
     """
     Create a Jira issue using the provided ticket dictionary and Jira client.
     Returns the issue key of the created ticket.
@@ -119,7 +119,7 @@ def write_ticket(
     out_dir: Optional[str] = "out",
     filename: Optional[str] = None,
     conversation_history: Optional[List[Dict]] = None,
-) -> Path:
+) -> Dict[str, str]:
     """
     Write the provided ticket dictionary as a JSON file, and a log file with the dialogue if provided.
     Handles directory creation and filename generation.
@@ -147,7 +147,7 @@ def write_ticket(
 
     jira_result = create_jira_issue(ticket)
     
-    if jira_result and jira_result.get("key"):
+    if jira_result and isinstance(jira_result, dict) and jira_result.get("key"):
         add_attachment(log_path, jira_result["key"])
         jira_link = f"{os.getenv('JIRA_URL')}/browse/{jira_result['key']}"
         return {
@@ -163,7 +163,7 @@ def write_ticket(
             "message": "Unable to connect to Jira. Ticket saved locally for manual creation."
         }
 
-def find_existing_ticket(shared: Dict, history: List[Dict]) -> str:
+def find_existing_ticket(shared: Dict, history: List[Dict]) -> Optional[Dict[str, str]]:
     """Return existing ticket link if found in shared store or conversation history, else None."""
     if shared.get("ticket_link"):
         return {
@@ -265,7 +265,7 @@ def main():
     
     # Example: Create a task
     result = create_jira_issue(ticket)
-    add_attachment(Path("requirements.txt"), result["key"]) if result else None
+    add_attachment(Path("requirements.txt"), result["key"]) if result and isinstance(result, dict) and "key" in result else None
     
     if result:
         print(f"\nFull response: {json.dumps(result, indent=2)}")

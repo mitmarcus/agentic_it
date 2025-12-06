@@ -128,6 +128,10 @@ async def scrape_session():
             email = os.getenv("EMAIL")
             password = os.getenv("PASSWORD")
 
+            if not email or not password:
+                print("Email or password not configured in environment variables")
+                return None
+
             print("Signing in...")
             
             await autofill_sign_in(page, email, password)
