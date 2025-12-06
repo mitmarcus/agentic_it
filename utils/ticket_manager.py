@@ -202,7 +202,7 @@ def find_existing_ticket(shared: Dict, history: List[Dict]) -> str:
 
     return None
 
-def close_issue(ticket_id: str) -> str:
+def close_issue(ticket_id: str) -> bool:
     """
     Close the Jira issue with the specified ticket ID.
     Returns True if successful, False otherwise.
