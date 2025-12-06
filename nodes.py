@@ -138,8 +138,6 @@ class RedactInputNode(Node):
     
     def post(self, shared: Dict, prep_res: Dict, exec_res: Dict) -> str:
         """Replace user_query with redacted version and notify user if redacted."""
-        # Store original for logging only
-        shared["original_query"] = prep_res["query"]
         # Replace with redacted version for all downstream nodes
         shared["user_query"] = exec_res["redacted_query"]
         shared["had_sensitive_data"] = exec_res["had_sensitive_data"]
@@ -287,7 +285,6 @@ class EmbedQueryNode(Node):
         
         return {
             "embedding": embedding,
-            "original_query": query,
             "query_with_context": query_with_context if query_with_context != query else None,
             "enhanced_query": enhanced_query if enhanced_query != query_with_context else None,
             "is_follow_up": is_follow_up
@@ -345,7 +342,6 @@ class EmbedQueryNode(Node):
         embed_dim = _RAG_CONFIG["embedding_dim"]
         return {
             "embedding": [0.0] * embed_dim,
-            "original_query": prep_res.get("query", ""),
             "query_with_context": None,
             "enhanced_query": None,
             "is_follow_up": False
