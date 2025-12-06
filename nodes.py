@@ -621,7 +621,7 @@ Retrieved Knowledge Base ({doc_count} documents, avg score: {avg_score:.2f}):
 Network Status:
 {context['network_status']}
 
-Conversation History (look at the last 3 messages):
+Conversation History (look at the last few messages):
 {context['conversation_history'] if context['conversation_history'] else 'No previous conversation'}
 
 Current Workflow State: {context['workflow_status']}"""
