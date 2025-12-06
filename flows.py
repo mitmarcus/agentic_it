@@ -6,6 +6,7 @@ Flows orchestrate nodes into complete workflows.
 from langfuse_tracing import trace_flow, TracingConfig
 from utils.logger import get_logger
 
+from typing import Union
 from cremedelacreme import AsyncFlow, Flow
 from nodes import (
     # Company laptop only nodes
@@ -237,7 +238,7 @@ def create_test_query_flow() -> Flow:
 _flow_cache: dict = {}
 
 
-def get_flow(flow_type: str = "query") -> Flow:
+def get_flow(flow_type: str = "query") -> Union[Flow, AsyncFlow]:
     """
     Get a flow by type name. Flows are cached for efficiency.
     
@@ -245,7 +246,7 @@ def get_flow(flow_type: str = "query") -> Flow:
         flow_type: One of "query", "indexing", "status", "test"
     
     Returns:
-        Flow instance (cached)
+        Flow or AsyncFlow instance (cached)
         
     Raises:
         ValueError: If flow_type is unknown
