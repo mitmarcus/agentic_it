@@ -123,7 +123,7 @@ python test_chatbot.py
 
 ### Query Flow
 
-1. **Intent Classification**: Categorizes query (factual/troubleshooting/navigation)
+1. **Intent Classification**: Categorizes query (informative/troubleshooting)
 2. **Query Embedding**: Generates vector representation using local model
 3. **KB Search**: Retrieves top-k relevant documents from ChromaDB
 4. **Decision Maker** (Agent): Decides next action:

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { getJSON } from "../lib/api";
+import { getJSON, API_BASE_URL } from "../lib/api";
 import { StatsCard, type HealthStatus } from "./components/StatsCard";
 import { FileUpload } from "../components/upload/FileUpload";
 
@@ -44,17 +44,21 @@ export default function IngestPage() {
       const data = await getJSON<HealthStatus>(`/health`);
       setHealth(data);
     } catch (error) {
-      console.error("Error fetching health status:", error);
+      if (process.env.NODE_ENV === "development") {
+        console.error("Error fetching health status:", error);
+      }
     }
   };
 
   const fetchCollectionInfo = async () => {
     setLoadingCollection(true);
     try {
-      const data = await getJSON<CollectionInfo>(`/collection/info?limit=100`);
+      const data = await getJSON<CollectionInfo>(`/collection/info?limit=300`);
       setCollectionInfo(data);
     } catch (error) {
-      console.error("Error fetching collection info:", error);
+      if (process.env.NODE_ENV === "development") {
+        console.error("Error fetching collection info:", error);
+      }
     } finally {
       setLoadingCollection(false);
     }
@@ -72,24 +76,25 @@ export default function IngestPage() {
     setDeletingDoc(sourceFile);
     try {
       const encodedPath = encodeURIComponent(sourceFile);
-      const response = await fetch(
-        `http://localhost:8000/documents/${encodedPath}`,
-        {
-          method: "DELETE",
-        }
-      );
+      const response = await fetch(`${API_BASE_URL}/documents/${encodedPath}`, {
+        method: "DELETE",
+      });
 
       if (!response.ok) {
         throw new Error(`Failed to delete document: ${response.statusText}`);
       }
 
       const result = await response.json();
-      console.log("Delete result:", result);
+      if (process.env.NODE_ENV === "development") {
+        console.log("Delete result:", result);
+      }
 
       // Refresh the collection info
       await fetchCollectionInfo();
     } catch (error) {
-      console.error("Error deleting document:", error);
+      if (process.env.NODE_ENV === "development") {
+        console.error("Error deleting document:", error);
+      }
       alert(`Failed to delete document: ${error}`);
     } finally {
       setDeletingDoc(null);

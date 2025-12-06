@@ -2,8 +2,11 @@
 This is the chatbot FastAPI service.
 """
 import os
+
+# Disable tokenizers' parallelism to avoid fork deadlock warnings
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
 import uuid
-import logging
 from datetime import datetime
 from contextlib import asynccontextmanager
 
@@ -15,6 +18,10 @@ from typing import List
 # Import flows
 from flows import get_flow
 from utils.conversation_memory import conversation_memory
+from utils.logger import setup_logging, get_logger
+
+# Import core utilities
+from core.error_handling import handle_api_errors
 
 # Import models
 from models import (
@@ -29,6 +36,9 @@ from models import (
     SessionCleanupResponse,
     CollectionInfoResponse,
     DeleteDocumentResponse,
+    FeedbackRequest,
+    FeedbackResponse,
+    FeedbackStatsResponse,
 )
 
 # Load environment variables 
@@ -36,24 +46,8 @@ from models import (
 load_dotenv()
 
 # Configure logging
-log_level = os.getenv("LOG_LEVEL", "INFO")
-log_file_enabled = os.getenv("LOG_FILE_ENABLED", "true").lower() == "true"
-log_file_path = os.getenv("LOG_FILE_PATH", "./logs/app.log")
-
-# Create logs directory if it doesn't exist
-if log_file_enabled:
-    os.makedirs(os.path.dirname(log_file_path), exist_ok=True)
-
-logging.basicConfig(
-    level=log_level,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler(log_file_path) if log_file_enabled else logging.NullHandler()
-    ]
-)
-
-logger = logging.getLogger(__name__)
+setup_logging()
+logger = get_logger(__name__)
 
 
 # ============================================================================
@@ -80,6 +74,7 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"ChromaDB connection check failed: {e}")
         logger.warning("Indexing may be required. Use POST /index to index documents.")
+
     
     yield  # Application runs here
     
@@ -129,7 +124,67 @@ async def health_check():
     }
 
 
+# ============================================================================
+# Feedback Endpoints (Improvement #6)
+# ============================================================================
+
+@app.post("/feedback", response_model=FeedbackResponse)
+@handle_api_errors("feedback")
+async def submit_feedback(request: FeedbackRequest):
+    """
+    Submit user feedback for a query-response pair.
+    
+    This endpoint collects feedback to improve the RAG system over time.
+    
+    Args:
+        request: Feedback request with session_id, query, response, and feedback type
+    
+    Returns:
+        Confirmation with feedback ID
+    """
+    from utils.feedback import record_feedback
+    
+    # Convert doc IDs to the format expected by record_feedback
+    retrieved_docs = [{"id": doc_id} for doc_id in (request.retrieved_doc_ids or [])]
+    
+    feedback_id = record_feedback(
+        session_id=request.session_id,
+        query=request.query,
+        response=request.response,
+        feedback_type=request.feedback_type,
+        feedback_score=request.feedback_score,
+        feedback_comment=request.feedback_comment,
+        retrieved_docs=retrieved_docs
+    )
+    
+    return FeedbackResponse(
+        feedback_id=feedback_id,
+        message="Thank you for your feedback!",
+        timestamp=datetime.now().isoformat()
+    )
+
+
+@app.get("/feedback/stats", response_model=FeedbackStatsResponse)
+@handle_api_errors("feedback_stats")
+async def get_feedback_stats():
+    """
+    Get feedback statistics.
+    
+    Returns aggregated feedback data for monitoring and analysis.
+    
+    Returns:
+        Feedback statistics including positive/negative counts and rates
+    """
+    from utils.feedback import get_feedback_store
+    
+    store = get_feedback_store()
+    stats = store.get_feedback_stats()
+    
+    return FeedbackStatsResponse(**stats)
+
+
 @app.get("/collection/info", response_model=CollectionInfoResponse)
+@handle_api_errors("collection_info")
 async def get_collection_info(
     limit: int = 100,
     offset: int = 0,
@@ -149,83 +204,79 @@ async def get_collection_info(
     Raises:
         HTTPException: If collection access fails
     """
-    try:
-        from utils.chromadb_client import get_collection
+    from utils.chromadb_client import get_collection
+    
+    collection = get_collection(collection_name=collection_name)
+    total_count = collection.count()
+    
+    # Get all documents to group by source file
+    result = collection.get(
+        include=["documents", "metadatas"]
+    )
+    
+    # Group documents by source file
+    grouped_docs = {}
+    ids = result.get("ids", []) or []
+    docs = result.get("documents", []) or []
+    metadatas = result.get("metadatas", []) or []
+    
+    for i in range(len(ids)):
+        doc_text = docs[i] if i < len(docs) and docs[i] else ""
+        metadata = metadatas[i] if i < len(metadatas) and metadatas[i] else {}
         
-        collection = get_collection(collection_name=collection_name)
-        total_count = collection.count()
+        source_file = metadata.get("source_file", "Unknown")
+        filename = metadata.get("filename", "Unknown")
         
-        # Get all documents to group by source file
-        result = collection.get(
-            include=["documents", "metadatas"]
-        )
+        if source_file not in grouped_docs:
+            grouped_docs[source_file] = {
+                "filename": filename,
+                "source_file": source_file,
+                "extension": metadata.get("extension", metadata.get("file_type", "unknown")),
+                "chunks": []
+            }
         
-        # Group documents by source file
-        grouped_docs = {}
-        ids = result.get("ids", []) or []
-        docs = result.get("documents", []) or []
-        metadatas = result.get("metadatas", []) or []
+        grouped_docs[source_file]["chunks"].append({
+            "id": ids[i],
+            "content": doc_text,
+            "chunk_index": metadata.get("chunk_index", 0)
+        })
+    
+    # Format grouped documents
+    documents = []
+    for source_file, doc_info in grouped_docs.items():
+        # Sort chunks by index
+        doc_info["chunks"].sort(key=lambda x: x.get("chunk_index", 0))
         
-        for i in range(len(ids)):
-            doc_text = docs[i] if i < len(docs) and docs[i] else ""
-            metadata = metadatas[i] if i < len(metadatas) and metadatas[i] else {}
-            
-            source_file = metadata.get("source_file", "Unknown")
-            filename = metadata.get("filename", "Unknown")
-            
-            if source_file not in grouped_docs:
-                grouped_docs[source_file] = {
-                    "filename": filename,
-                    "source_file": source_file,
-                    "extension": metadata.get("extension", metadata.get("file_type", "unknown")),
-                    "chunks": []
-                }
-            
-            grouped_docs[source_file]["chunks"].append({
-                "id": ids[i],
-                "content": doc_text,
-                "chunk_index": metadata.get("chunk_index", 0)
-            })
+        # Get first chunk for preview
+        first_chunk = doc_info["chunks"][0]["content"] if doc_info["chunks"] else ""
+        doc_preview = first_chunk[:200] + "..." if len(first_chunk) > 200 else first_chunk
         
-        # Format grouped documents
-        documents = []
-        for source_file, doc_info in grouped_docs.items():
-            # Sort chunks by index
-            doc_info["chunks"].sort(key=lambda x: x.get("chunk_index", 0))
-            
-            # Get first chunk for preview
-            first_chunk = doc_info["chunks"][0]["content"] if doc_info["chunks"] else ""
-            doc_preview = first_chunk[:200] + "..." if len(first_chunk) > 200 else first_chunk
-            
-            documents.append({
-                "id": f"{source_file}_grouped",
-                "content": doc_preview,
-                "metadata": {
-                    "filename": doc_info["filename"],
-                    "source_file": source_file,
-                    "extension": doc_info["extension"],
-                    "chunk_count": len(doc_info["chunks"])
-                },
-                "chunks": doc_info["chunks"]
-            })
-        
-        # Apply pagination
-        paginated_docs = documents[offset:offset + limit]
-        
-        logger.info(f"Retrieved {len(documents)} unique documents (grouped from {total_count} chunks)")
-        
-        return {
-            "collection_name": collection_name,
-            "total_documents": len(documents),
-            "documents": paginated_docs
-        }
-        
-    except Exception as e:
-        logger.error(f"Failed to get collection info: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to get collection info: {str(e)}")
+        documents.append({
+            "id": f"{source_file}_grouped",
+            "content": doc_preview,
+            "metadata": {
+                "filename": doc_info["filename"],
+                "source_file": source_file,
+                "extension": doc_info["extension"],
+                "chunk_count": len(doc_info["chunks"])
+            },
+            "chunks": doc_info["chunks"]
+        })
+    
+    # Apply pagination
+    paginated_docs = documents[offset:offset + limit]
+    
+    logger.debug(f"Retrieved {len(documents)} unique documents (grouped from {total_count} chunks)")
+    
+    return {
+        "collection_name": collection_name,
+        "total_documents": len(documents),
+        "documents": paginated_docs
+    }
 
 
 @app.post("/query", response_model=QueryResponse)
+@handle_api_errors("process_query")
 async def process_query(request: QueryRequest):
     """
     Process a user query through the chatbot.
@@ -239,80 +290,85 @@ async def process_query(request: QueryRequest):
     Raises:
         HTTPException: If query processing fails
     """
-    try:
-        # Generate or use provided session ID
-        session_id = request.session_id or str(uuid.uuid4())
-        user_id = request.user_id or "anonymous"
-        user_os = request.user_os or "unknown"
-        
-        logger.info(f"Processing query from session {session_id} {user_os}: {request.query[:100]}")
-        
-        # Add user message to conversation memory
-        conversation_memory.add_message(session_id, "user", request.query)
-        
-        # Get conversation turn count
-        history = conversation_memory.get_conversation_history(session_id)
-        turn_count = len([m for m in history if m["role"] == "user"])
-        
-        # Prepare shared store
-        shared = {
-            "session_id": session_id,
-            "user_id": user_id,
-            "user_os": user_os,
-            "user_query": request.query,
-            "timestamp": datetime.now().isoformat(),
-            "turn_count": turn_count,
-            "status_results": {},
-            "response": {}
-        }
+    # Validate query length
+    if len(request.query) > 10000:
+        raise HTTPException(
+            status_code=400, 
+            detail="Query too long. Maximum length is 10,000 characters."
+        )
+    
+    # Generate or use provided session ID
+    session_id = request.session_id or str(uuid.uuid4())
+    user_id = request.user_id or "anonymous"
+    user_os = request.user_os or "unknown"
+    
+    logger.debug(f"Processing query from session {session_id} {user_os}: {request.query[:100]}")
+    
+    # Add user message to conversation memory
+    conversation_memory.add_message(session_id, "user", request.query)
+    
+    # Get conversation turn count
+    history = conversation_memory.get_conversation_history(session_id)
+    turn_count = len([m for m in history if m["role"] == "user"])
+    
+    # Prepare shared store
+    shared = {
+        "session_id": session_id,
+        "user_id": user_id,
+        "user_os": user_os,
+        "user_query": request.query,
+        "timestamp": datetime.now().isoformat(),
+        "turn_count": turn_count,
+    }
 
-        # If this is the start of the conversation, query the status page
-        status_flow = get_flow("status")
-        if turn_count == 1:
-            result = await status_flow.run_async(shared)
-            logger.info(f"Initial status check completed for session {session_id}. Result: {result}")
+    # If this is the start of the conversation, query the status page
+    status_flow = get_flow("status")
+    if turn_count == 1:
+        result = await status_flow.run_async(shared)
+        logger.debug(f"Initial status check completed for session {session_id}. Result: {result}")
 
-        
-        # Get and run the query flow
-        flow = get_flow("query")
-        flow.run(shared)
-        
-        # Extract response
-        response_data = shared.get("response", {})
-        response_text = response_data.get("text", "I'm sorry, I couldn't process your request.")
-        action_taken = response_data.get("action_taken", "unknown")
-        requires_followup = response_data.get("requires_followup", False)
-        
-        # Prepend redaction notice if sensitive data was detected
-        if shared.get("redaction_notice"):
-            response_text = shared["redaction_notice"] + "\n\n" + response_text
-        
-        # Prepare metadata
-        metadata = {
-            "intent": shared.get("intent", {}),
-            "retrieved_docs_count": len(shared.get("retrieved_docs", [])),
-            "decision": shared.get("decision", {}),
-            "turn_count": turn_count
-        }
-        
-        conversation_memory.add_message(session_id, "assistant", response_text)
-        
-        logger.info(f"Query processed successfully. Action: {action_taken}")
-        
-        return {
-            "response": response_text,
-            "session_id": session_id,
-            "action_taken": action_taken,
-            "requires_followup": requires_followup,
-            "metadata": metadata
-        }
-        
-    except Exception as e:
-        logger.error(f"Error processing query: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Error processing query: {str(e)}")
+    
+    # Get and run the query flow
+    flow = get_flow("query")
+    flow.run(shared)
+    
+    # Extract response
+    response_data = shared.get("response", {})
+    response_text = response_data.get("text", "I'm sorry, I couldn't process your request.")
+    action_taken = response_data.get("action_taken", "unknown")
+    requires_followup = response_data.get("requires_followup", False)
+    
+    # Prepend redaction notice if sensitive data was detected
+    if shared.get("redaction_notice"):
+        response_text = shared["redaction_notice"] + "\n\n" + response_text
+    
+    # Prepare metadata (include doc IDs for feedback tracking)
+    retrieved_docs = shared.get("retrieved_docs", [])
+    retrieved_doc_ids = [doc.get("id", "") for doc in retrieved_docs if doc.get("id")]
+    
+    metadata = {
+        "intent": shared.get("intent", {}),
+        "retrieved_docs_count": len(retrieved_docs),
+        "retrieved_doc_ids": retrieved_doc_ids,
+        "decision": shared.get("decision", {}),
+        "turn_count": turn_count
+    }
+    
+    conversation_memory.add_message(session_id, "assistant", response_text)
+    
+    logger.debug(f"Query processed successfully. Action: {action_taken}")
+    
+    return {
+        "response": response_text,
+        "session_id": session_id,
+        "action_taken": action_taken,
+        "requires_followup": requires_followup,
+        "metadata": metadata
+    }
 
 
 @app.post("/index", response_model=IndexResponse)
+@handle_api_errors("index_documents")
 async def index_documents(request: IndexRequest):
     """
     Index documents into the knowledge base.
@@ -326,40 +382,36 @@ async def index_documents(request: IndexRequest):
     Raises:
         HTTPException: If indexing fails
     """
-    try:
-        source_dir = request.source_dir or os.getenv("INGESTION_SOURCE_DIR", "./data/docs")
-        
-        logger.info(f"Starting document indexing from {source_dir}")
-        
-        # Prepare shared store
-        shared = {
-            "source_dir": source_dir
-        }
-        
-        # Get and run the indexing flow
-        flow = get_flow("indexing")
-        flow.run(shared)
-        
-        # Extract results
-        documents_loaded = len(shared.get("documents", []))
-        chunks_created = len(shared.get("all_chunks", []))
-        chunks_indexed = shared.get("indexed_count", 0)
-        
-        logger.info(f"Indexing completed: {documents_loaded} docs, {chunks_indexed} chunks indexed")
-        
-        return {
-            "status": "success",
-            "documents_loaded": documents_loaded,
-            "chunks_created": chunks_created,
-            "chunks_indexed": chunks_indexed
-        }
-        
-    except Exception as e:
-        logger.error(f"Error indexing documents: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Error indexing documents: {str(e)}")
+    source_dir = request.source_dir or os.getenv("INGESTION_SOURCE_DIR", "./data/docs")
+    
+    logger.info(f"Starting document indexing from {source_dir}")
+    
+    # Prepare shared store
+    shared = {
+        "source_dir": source_dir
+    }
+    
+    # Get and run the indexing flow
+    flow = get_flow("indexing")
+    flow.run(shared)
+    
+    # Extract results
+    documents_loaded = len(shared.get("documents", []))
+    chunks_created = len(shared.get("all_chunks", []))
+    chunks_indexed = shared.get("indexed_count", 0)
+    
+    logger.info(f"Indexing completed: {documents_loaded} docs, {chunks_indexed} chunks indexed")
+    
+    return {
+        "status": "success",
+        "documents_loaded": documents_loaded,
+        "chunks_created": chunks_created,
+        "chunks_indexed": chunks_indexed
+    }
 
 
 @app.post("/upload", response_model=FileUploadResponse)
+@handle_api_errors("upload_documents")
 async def upload_documents(files: List[UploadFile] = File(...)):
     """
     Upload and index multiple documents into the knowledge base.
@@ -447,7 +499,7 @@ async def upload_documents(files: List[UploadFile] = File(...)):
                     "size_bytes": file_size
                 })
                 
-                logger.info(f"Saved uploaded file: {file.filename} ({file_size} bytes)")
+                logger.debug(f"Saved uploaded file: {file.filename} ({file_size} bytes)")
                 
             except Exception as e:
                 failed_files.append({
@@ -467,7 +519,7 @@ async def upload_documents(files: List[UploadFile] = File(...)):
             }
         
         # Index the uploaded files
-        logger.info(f"Indexing {len(uploaded_files)} uploaded files from {temp_dir}")
+        logger.debug(f"Indexing {len(uploaded_files)} uploaded files from {temp_dir}")
         
         shared = {
             "source_dir": temp_dir
@@ -538,10 +590,6 @@ async def upload_documents(files: List[UploadFile] = File(...)):
             "chunks_indexed": chunks_indexed,
             "file_details": file_details
         }
-        
-    except Exception as e:
-        logger.error(f"Error during upload/indexing: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Error processing upload: {str(e)}")
     
     finally:
         # Cleanup temporary directory
@@ -553,6 +601,7 @@ async def upload_documents(files: List[UploadFile] = File(...)):
 
 
 @app.delete("/session/{session_id}", response_model=SessionClearResponse)
+@handle_api_errors("clear_session")
 async def clear_session(session_id: str):
     """
     Clear a conversation session.
@@ -563,18 +612,14 @@ async def clear_session(session_id: str):
     Returns:
         Success message
     """
-    try:
-        conversation_memory.clear_session(session_id)
-        logger.info(f"Session {session_id} cleared")
-        
-        return {"status": "success", "message": f"Session {session_id} cleared"}
-        
-    except Exception as e:
-        logger.error(f"Error clearing session: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Error clearing session: {str(e)}")
+    conversation_memory.clear_session(session_id)
+    logger.info(f"Session {session_id} cleared")
+    
+    return {"status": "success", "message": f"Session {session_id} cleared"}
 
 
 @app.get("/session/{session_id}/history", response_model=SessionHistoryResponse)
+@handle_api_errors("get_session_history")
 async def get_session_history(session_id: str, limit: int = 10):
     """
     Get conversation history for a session.
@@ -586,21 +631,17 @@ async def get_session_history(session_id: str, limit: int = 10):
     Returns:
         Conversation history
     """
-    try:
-        history = conversation_memory.get_conversation_history(session_id, limit=limit)
-        
-        return {
-            "session_id": session_id,
-            "message_count": len(history),
-            "messages": history
-        }
-        
-    except Exception as e:
-        logger.error(f"Error getting session history: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Error getting session history: {str(e)}")
+    history = conversation_memory.get_conversation_history(session_id, limit=limit)
+    
+    return {
+        "session_id": session_id,
+        "message_count": len(history),
+        "messages": history
+    }
 
 
 @app.post("/maintenance/cleanup-sessions", response_model=SessionCleanupResponse)
+@handle_api_errors("cleanup_old_sessions")
 async def cleanup_old_sessions(max_age_hours: int = 24):
     """
     Clean up old conversation sessions.
@@ -611,22 +652,18 @@ async def cleanup_old_sessions(max_age_hours: int = 24):
     Returns:
         Cleanup results
     """
-    try:
-        removed_count = conversation_memory.cleanup_old_sessions(max_age_hours)
-        logger.info(f"Cleaned up {removed_count} old sessions")
-        
-        return {
-            "status": "success",
-            "sessions_removed": removed_count,
-            "max_age_hours": max_age_hours
-        }
-        
-    except Exception as e:
-        logger.error(f"Error cleaning up sessions: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Error cleaning up sessions: {str(e)}")
+    removed_count = conversation_memory.cleanup_old_sessions(max_age_hours)
+    logger.info(f"Cleaned up {removed_count} old sessions")
+    
+    return {
+        "status": "success",
+        "sessions_removed": removed_count,
+        "max_age_hours": max_age_hours
+    }
 
 
 @app.delete("/documents/{source_file:path}", response_model=DeleteDocumentResponse)
+@handle_api_errors("delete_document")
 async def delete_document(source_file: str):
     """
     Delete a document and all its chunks from the knowledge base.
@@ -640,33 +677,33 @@ async def delete_document(source_file: str):
     Raises:
         HTTPException: If deletion fails
     """
-    try:
-        from utils.chromadb_client import delete_documents_by_source
-        
-        logger.info(f"Deleting document: {source_file}")
-        
-        # Delete all chunks for this source file
-        chunks_deleted = delete_documents_by_source(source_file)
-        
-        if chunks_deleted == 0:
-            raise HTTPException(
-                status_code=404,
-                detail=f"No documents found for source file: {source_file}"
-            )
-        
-        logger.info(f"Successfully deleted {chunks_deleted} chunks from {source_file}")
-        
-        return {
-            "status": "success",
-            "chunks_deleted": chunks_deleted,
-            "source_file": source_file
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error deleting document: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Error deleting document: {str(e)}")
+    from utils.chromadb_client import delete_documents_by_source
+    
+    # Validate source_file parameter
+    if not source_file or len(source_file.strip()) == 0:
+        raise HTTPException(status_code=400, detail="source_file parameter is required")
+    
+    if len(source_file) > 1000:
+        raise HTTPException(status_code=400, detail="source_file parameter too long")
+    
+    logger.info(f"Deleting document: {source_file}")
+    
+    # Delete all chunks for this source file
+    chunks_deleted = delete_documents_by_source(source_file)
+    
+    if chunks_deleted == 0:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No documents found for source file: {source_file}"
+        )
+    
+    logger.info(f"Successfully deleted {chunks_deleted} chunks from {source_file}")
+    
+    return {
+        "status": "success",
+        "chunks_deleted": chunks_deleted,
+        "source_file": source_file
+    }
 
 
 # ============================================================================
@@ -686,5 +723,5 @@ if __name__ == "__main__":
         host=host,
         port=port,
         reload=True,  # Enable auto-reload in development
-        log_level=log_level.lower()
+        log_level=os.getenv("LOG_LEVEL", "INFO").lower()
     )
