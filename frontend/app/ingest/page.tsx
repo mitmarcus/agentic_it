@@ -53,7 +53,7 @@ export default function IngestPage() {
   const fetchCollectionInfo = async () => {
     setLoadingCollection(true);
     try {
-      const data = await getJSON<CollectionInfo>(`/collection/info?limit=100`);
+      const data = await getJSON<CollectionInfo>(`/collection/info?limit=300`);
       setCollectionInfo(data);
     } catch (error) {
       if (process.env.NODE_ENV === "development") {

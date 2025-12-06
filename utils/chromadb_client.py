@@ -223,6 +223,72 @@ def query_collection(
     return formatted_results
 
 
+def get_neighbor_chunks(
+    source_file: str,
+    chunk_index: int,
+    neighbor_count: int = 1,
+    *,
+    collection_name: str = os.getenv("CHROMADB_COLLECTION", _DEFAULT_COLLECTION_NAME)
+) -> list[dict[str, Any]]:
+    """
+    Fetch neighboring chunks from the same document.
+    
+    This is useful when a chunk is highly relevant but the answer spans multiple chunks
+    (e.g., step-by-step instructions split across chunks).
+    
+    Args:
+        source_file: Source file path
+        chunk_index: Index of the anchor chunk
+        neighbor_count: How many neighbors to fetch on each side (default: 1)
+        collection_name: Collection name
+    
+    Returns:
+        List of neighbor chunks sorted by chunk_index
+        
+    Example:
+        >>> # Get chunk 5 and its neighbors (4, 6)
+        >>> neighbors = get_neighbor_chunks("guide.html", 5, neighbor_count=1)
+    """
+    collection = get_collection(collection_name=collection_name)
+    
+    # Calculate neighbor indices
+    min_index = max(0, chunk_index - neighbor_count)
+    max_index = chunk_index + neighbor_count
+    
+    # Fetch all chunks from this source
+    results = collection.get(
+        where={"source_file": source_file},
+        include=["documents", "metadatas"]
+    )
+    
+    if not results or not results.get("ids"):
+        return []
+    
+    # Filter and format neighbors
+    neighbors = []
+    ids = results.get("ids", [])
+    documents = results.get("documents", [])
+    metadatas = results.get("metadatas", [])
+    
+    for i in range(len(ids)):
+        metadata = metadatas[i] if i < len(metadatas) else {}
+        current_index = metadata.get("chunk_index", -1)
+        
+        # Include if in neighbor range
+        if min_index <= current_index <= max_index:
+            neighbors.append({
+                "id": ids[i],
+                "document": documents[i] if i < len(documents) else "",
+                "metadata": metadata,
+                "score": 0.95,  # High score for neighbors
+                "is_neighbor": True
+            })
+    
+    # Sort by chunk_index
+    neighbors.sort(key=lambda x: x["metadata"].get("chunk_index", 0))
+    return neighbors
+
+
 def delete_documents_by_source(
     source_file: str,
     *,
