@@ -21,7 +21,7 @@ from utils.intent_classifier import classify_intent, extract_keywords
 from utils.conversation_memory import conversation_memory
 from utils.chromadb_client import query_collection, get_neighbor_chunks
 from utils.chunker import truncate_to_token_limit
-from utils.redactor import redact_text, redact_dict
+from utils.redactor import redact_text
 from utils.status_retrieval import format_status_results
 from utils.reranker import rerank_results
 from utils.feedback import apply_feedback_adjustments
@@ -140,7 +140,6 @@ class RedactInputNode(Node):
         """Replace user_query with redacted version and notify user if redacted."""
         # Replace with redacted version for all downstream nodes
         shared["user_query"] = exec_res["redacted_query"]
-        shared["had_sensitive_data"] = exec_res["had_sensitive_data"]
         
         # If redaction occurred, add a warning message for the user
         if exec_res["had_sensitive_data"]:
@@ -286,11 +285,11 @@ class EmbedQueryNode(Node):
         # Log what was actually embedded (for debugging)
         if enhanced_query != query:
             logger.info(f"Embedded enhanced query: '{enhanced_query[:150]}...'")
+        if is_follow_up:
+            logger.info(f"Follow-up query detected and processed")
         
         return {
-            "embedding": embedding,
-            "enhanced_query": enhanced_query if enhanced_query != query else None,
-            "is_follow_up": is_follow_up
+            "embedding": embedding
         }
     
     def _is_follow_up(self, query: str) -> bool:
@@ -344,21 +343,12 @@ class EmbedQueryNode(Node):
         logger.error(f"Embedding failed after retries: {exc}")
         embed_dim = _RAG_CONFIG["embedding_dim"]
         return {
-            "embedding": [0.0] * embed_dim,
-            "enhanced_query": None,
-            "is_follow_up": False
+            "embedding": [0.0] * embed_dim
         }
     
     def post(self, shared: Dict, prep_res: Dict, exec_res: Dict) -> str:
-        """Write embedding and follow-up status to shared store."""
+        """Write embedding to shared store."""
         shared["query_embedding"] = exec_res["embedding"]
-        shared["is_follow_up"] = exec_res.get("is_follow_up", False)
-        
-        # Store enhanced query for debugging if query was modified
-        if exec_res.get("enhanced_query"):
-            shared["enhanced_query"] = exec_res["enhanced_query"]
-            logger.debug(f"Query enhanced for embedding: {exec_res['enhanced_query'][:100]}...")
-        
         return "default"
 
 
