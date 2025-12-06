@@ -324,7 +324,7 @@ async def process_query(request: QueryRequest):
         # If this is the start of the conversation, query the status page
         status_flow = get_flow("status")
         if turn_count == 1:
-            result = await status_flow.run_async(shared)
+            result = await status_flow.run(shared)
             logger.debug(f"Initial status check completed for session {session_id}. Result: {result}")
 
         

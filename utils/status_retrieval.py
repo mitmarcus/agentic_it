@@ -69,7 +69,7 @@ async def grab_status(page):
             try:
                 await content_locator.wait_for(state='visible', timeout=2000)
                 has_maintenance_content = True
-            except:
+            except Exception:
                 has_maintenance_content = False
                 print(f"No maintenance content found for: {title}")
             
