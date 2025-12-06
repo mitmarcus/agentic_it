@@ -19,7 +19,7 @@ from utils.call_llm_groq import call_llm
 from utils.embedding_local import get_embedding
 from utils.intent_classifier import classify_intent, extract_keywords
 from utils.conversation_memory import conversation_memory
-from utils.chromadb_client import query_collection
+from utils.chromadb_client import query_collection, get_neighbor_chunks
 from utils.chunker import truncate_to_token_limit
 from utils.redactor import redact_text, redact_dict
 from utils.status_retrieval import format_status_results
@@ -34,12 +34,14 @@ from utils.prompts import (
     COMMON_DONTS,
     URL_RULES,
     CLARIFY_BAD_EXAMPLES,
+    CLARIFICATION_RULES,
     DECISION_MAKER_ROLE,
     RATE_LIMIT_MESSAGE,
     RATE_LIMIT_WITH_DOCS_MESSAGE,
     GENERIC_ERROR_MESSAGE,
     GENERIC_CLARIFY_MESSAGE,
     os_awareness_instruction,
+    get_decision_rules,
     parse_yaml_response,
 )
 
@@ -439,6 +441,30 @@ class SearchKnowledgeBaseNode(Node):
             # No reranking - just take top_k by vector score
             filtered_results = filtered_results[:top_k]
         
+        # Step 4: Smart neighbor retrieval for high-scoring chunks
+        # If top result has high score, fetch neighboring chunks for complete context
+        # This helps with step-by-step instructions split across chunks
+        if filtered_results and len(filtered_results) > 0:
+            top_score = filtered_results[0].get("rerank_score", filtered_results[0].get("score", 0))
+            
+            # Only fetch neighbors if top result is highly relevant (>0.75)
+            if top_score > 0.75:
+                top_result = filtered_results[0]
+                source_file = top_result["metadata"].get("source_file")
+                chunk_index = top_result["metadata"].get("chunk_index")
+                
+                if source_file and chunk_index is not None:
+                    logger.debug(f"Fetching neighbors for high-scoring chunk {chunk_index} from {source_file}")
+                    neighbors = get_neighbor_chunks(source_file, chunk_index, neighbor_count=1)
+                    
+                    # Add neighbors that aren't already in results
+                    existing_ids = {r["id"] for r in filtered_results}
+                    new_neighbors = [n for n in neighbors if n["id"] not in existing_ids]
+                    
+                    if new_neighbors:
+                        logger.debug(f"Added {len(new_neighbors)} neighbor chunks for complete context")
+                        filtered_results.extend(new_neighbors)
+        
         # Apply feedback adjustments (boost/penalize based on user feedback)
         score_key = "rerank_score" if filtered_results and "rerank_score" in filtered_results[0] else "score"
         filtered_results = apply_feedback_adjustments(filtered_results, score_key=score_key)
@@ -454,23 +480,36 @@ class SearchKnowledgeBaseNode(Node):
         if exec_res:
             max_context_tokens = _RAG_CONFIG["max_context_tokens"]
             
-            # Smart deduplication: keep BEST chunk per source, not FIRST
-            # This ensures we get the most relevant content from each document
-            best_by_source: Dict[str, Dict] = {}
+            # Group chunks by source file, preserving chunk order
+            chunks_by_source: Dict[str, List[Dict]] = {}
             for doc in exec_res:
                 source = doc['metadata'].get('source_file', 'unknown')
-                score = doc.get('rerank_score', doc.get('rrf_score', doc.get('score', 0)))
-                
-                if source not in best_by_source or score > best_by_source[source].get('_best_score', 0):
-                    doc['_best_score'] = score
-                    best_by_source[source] = doc
+                if source not in chunks_by_source:
+                    chunks_by_source[source] = []
+                chunks_by_source[source].append(doc)
             
-            unique_docs = list(best_by_source.values())
-            # Sort by score descending
-            unique_docs.sort(key=lambda d: d.get('_best_score', 0), reverse=True)
+            # For each source, sort chunks by index and keep them together
+            unique_docs = []
+            for source, chunks in chunks_by_source.items():
+                # Sort chunks by chunk_index to maintain document flow
+                chunks.sort(key=lambda c: c['metadata'].get('chunk_index', 0))
+                
+                # Find the highest scoring chunk in this group
+                best_score = max(c.get('rerank_score', c.get('rrf_score', c.get('score', 0))) for c in chunks)
+                
+                # Add all chunks with their group score for sorting
+                for chunk in chunks:
+                    chunk['_group_score'] = best_score
+                    unique_docs.append(chunk)
+            
+            # Sort by group score (keeps chunk groups together, ordered by relevance)
+            unique_docs.sort(key=lambda d: d.get('_group_score', 0), reverse=True)
             
             context_parts = []
-            for i, doc in enumerate(unique_docs):
+            doc_num = 1
+            prev_source = None
+            
+            for doc in unique_docs:
                 metadata = doc['metadata']
                 source_file = metadata.get('source_file', 'unknown')
                 chunk_index = metadata.get('chunk_index', '?')
@@ -478,9 +517,18 @@ class SearchKnowledgeBaseNode(Node):
                 
                 # Show rerank score if available, then RRF, then vector score
                 relevance = doc.get('rerank_score', doc.get('rrf_score', doc.get('score', 0)))
+                is_neighbor = doc.get('is_neighbor', False)
                 
-                context_parts.append(f"[Document {i+1}] (Relevance: {relevance:.2f})")
-                context_parts.append(f"File: {source_file} (Chunk {chunk_index} of {total_chunks})")
+                # Only increment doc number for new sources
+                if source_file != prev_source:
+                    context_parts.append(f"[Document {doc_num}] (Relevance: {relevance:.2f})")
+                    context_parts.append(f"File: {source_file}")
+                    doc_num += 1
+                    prev_source = source_file
+                
+                # Show chunk info and content
+                chunk_label = f"Chunk {chunk_index}" if not is_neighbor else f"Chunk {chunk_index} (neighbor)"
+                context_parts.append(f"--- {chunk_label} of {total_chunks} ---")
                 context_parts.append(doc['document'])
                 context_parts.append("")
             
@@ -488,7 +536,11 @@ class SearchKnowledgeBaseNode(Node):
             rag_context = truncate_to_token_limit(rag_context, max_context_tokens)
             
             shared["rag_context"] = rag_context
-            logger.debug(f"Compiled context from {len(unique_docs)} unique documents ({len(exec_res)} total chunks)")
+            
+            # Count unique sources and total chunks
+            unique_sources = len(set(d['metadata'].get('source_file', 'unknown') for d in unique_docs))
+            neighbor_count = sum(1 for d in unique_docs if d.get('is_neighbor', False))
+            logger.debug(f"Compiled context: {unique_sources} sources, {len(unique_docs)} chunks ({neighbor_count} neighbors)")
             return "docs_found"
         else:
             shared["rag_context"] = ""
@@ -591,23 +643,7 @@ Current Workflow State: {context['workflow_status']}"""
 4. Action Evaluation: Which 2-3 actions are most relevant? Briefly weigh their pros/cons given the context.
 5. Final Decision: Select the best action. Justify why it's superior to the alternatives now.
 
-### DECISION RULES (READ CAREFULLY)
-1. **USER CONFIRMATION = ANSWER**: If user says "yes", "correct", "that's right", "exactly", or similar confirmations after a clarifying question, they are confirming the issue. **ALWAYS choose 'answer'** and provide the solution from the retrieved documents.
-2. **TOPIC MATCH CHECK**: Before answering, verify the retrieved docs actually address the user's issue. A doc about "printer not working on VPN" does NOT answer "VPN not working" - these are different problems.
-3. **IF docs match the user's topic AND scores > {doc_threshold}, answer**. If docs are tangentially related (e.g., mention VPN but solve a different problem), **clarify** what the user needs.
-4. **CONTACT INFO & ROLES**: If the user asks "who to contact", and docs contain relevant contacts, answer.
-5. **VAGUE QUERIES**: For short queries like "vpn not working", "wifi issues", "help" - **clarify** what specific problem they're experiencing before assuming.
-6. You have searched {context['search_count']} times (max: {context['max_searches']}). If at max, choose 'answer' or 'clarify', NOT 'search_kb'.
-7. **PRIORITIZE SEARCH**: If you haven't searched yet and the query contains specific keywords (e.g., "router", "wifi", "who to ask"), choose 'search_kb' instead of 'clarify'.
-8. Only clarify if: (a) You have already searched and found nothing OR (b) Query is completely incomprehensible (e.g. "help", "it doesn't work") OR (c) Documents retrieved but irrelevant (score < {doc_threshold}).
-9. Never create ticket without attempting resolution first.
-10. **NEVER CLARIFY TWICE IN A ROW**: If conversation history shows we just asked a clarifying question, do NOT clarify again. Choose 'answer' with best available info.
-
-### EXAMPLES OF CORRECT BEHAVIOR
-- User confirms "yes" after clarification + docs available → **answer** with the solution
-- User asks "who to contact about router?" + You have docs about router contacts (score 0.72) → **answer** with contact info
-- User asks "router" (vague) + No good docs → **clarify** what they need
-- User asks clear question + No docs found → **search_kb** OR **answer** saying you don't have that info
+{get_decision_rules(doc_threshold, context)}
 ### AVAILABLE ACTIONS
 1.  search_kb 
     Description: Search knowledge base for technical documentation, procedures, or solutions
@@ -782,10 +818,13 @@ class GenerateAnswerNode(Node):
         confirmation_words = ["yes", "yeah", "yep", "correct", "right", "exactly", "that's it", "thats it"]
         is_confirmation = user_query.lower().strip() in confirmation_words
         
+        # Detect if user is explicitly mentioning an OS in their query
+        target_os, os_instruction = os_awareness_instruction(user_query, user_os)
+        
         prompt = f"""{SYSTEM_ROLE}
 
 USER'S CURRENT MESSAGE: "{user_query}"
-USER'S OPERATING SYSTEM: {user_os}
+USER'S OPERATING SYSTEM: {target_os}
 
 CONVERSATION HISTORY:
 {conversation_history if conversation_history else 'No previous conversation'}
@@ -794,12 +833,13 @@ KNOWLEDGE BASE DOCUMENTS:
 {context['rag_context'] or 'No relevant documents found.'}
 
 ### CRITICAL INSTRUCTIONS
-1. **IF USER CONFIRMS (says "yes", "correct", etc.)**: Look at the conversation history to understand what they're confirming, then provide the SOLUTION from the knowledge base documents. DO NOT ask for more details.
-2. **PROVIDE THE SOLUTION**: The knowledge base contains the answer. Extract the step-by-step solution and present it clearly.
-3. **BE DIRECT**: Don't say "since you said yes..." or reference their confirmation. Just provide the solution.
-4. **USE THE DOCS**: The solution is in the knowledge base. Use it!
-5. **OS AWARENESS**: {os_awareness_instruction(user_os)}
-6. **URLs**: {URL_RULES}
+1. **OS PRIORITY**: If user explicitly mentions an OS (Windows/Linux/Mac), provide instructions for THAT OS ONLY, even if docs are for a different OS. If no docs match their OS, say "I don't have specific {target_os} instructions. Please contact IT support."
+2. **IF USER CONFIRMS (says "yes", "correct", etc.)**: Look at the conversation history to understand what they're confirming, then provide the SOLUTION from the knowledge base documents. DO NOT ask for more details.
+3. **PROVIDE THE SOLUTION**: The knowledge base contains the answer. Extract the step-by-step solution and present it clearly.
+4. **BE DIRECT**: Don't say "since you said yes..." or reference their confirmation. Just provide the solution.
+5. **USE THE DOCS**: The solution is in the knowledge base. Use it!
+6. **OS AWARENESS**: {os_instruction}
+7. **URLs**: {URL_RULES}
 
 ### WHAT NOT TO DO
 - DON'T say "However, since your current response is just 'yes'..."
