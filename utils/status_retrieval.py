@@ -42,8 +42,12 @@ async def grab_status(page):
     try:
         await page.wait_for_load_state('networkidle')
         
-        # change to day view
-        await page.click('div[aria-label="Select View"]')
+        # change to day view with timeout to catch 2FA
+        try:
+            await page.click('div[aria-label="Select View"]', timeout=3000)
+        except Exception as e:
+            print(f"Timeout waiting for Select View button - likely hit 2FA page: {e}")
+            return None
         await page.wait_for_selector('li[aria-label="Select View Day"]', state='visible')
         await page.click('li[aria-label="Select View Day"]')
         await page.wait_for_load_state('networkidle')

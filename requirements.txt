@@ -22,6 +22,7 @@ pyyaml==6.0.3
 pdfplumber==0.11.7
 beautifulsoup4==4.14.2
 playwright==1.55.0
+requests==2.32.3
 
 # spaCy + NLP model
 spacy==3.8.9
