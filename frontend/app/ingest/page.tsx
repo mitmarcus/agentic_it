@@ -44,7 +44,9 @@ export default function IngestPage() {
       const data = await getJSON<HealthStatus>(`/health`);
       setHealth(data);
     } catch (error) {
-      console.error("Error fetching health status:", error);
+      if (process.env.NODE_ENV === "development") {
+        console.error("Error fetching health status:", error);
+      }
     }
   };
 
@@ -54,7 +56,9 @@ export default function IngestPage() {
       const data = await getJSON<CollectionInfo>(`/collection/info?limit=100`);
       setCollectionInfo(data);
     } catch (error) {
-      console.error("Error fetching collection info:", error);
+      if (process.env.NODE_ENV === "development") {
+        console.error("Error fetching collection info:", error);
+      }
     } finally {
       setLoadingCollection(false);
     }
@@ -81,12 +85,16 @@ export default function IngestPage() {
       }
 
       const result = await response.json();
-      console.log("Delete result:", result);
+      if (process.env.NODE_ENV === "development") {
+        console.log("Delete result:", result);
+      }
 
       // Refresh the collection info
       await fetchCollectionInfo();
     } catch (error) {
-      console.error("Error deleting document:", error);
+      if (process.env.NODE_ENV === "development") {
+        console.error("Error deleting document:", error);
+      }
       alert(`Failed to delete document: ${error}`);
     } finally {
       setDeletingDoc(null);

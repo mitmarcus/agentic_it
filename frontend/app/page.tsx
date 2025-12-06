@@ -77,7 +77,9 @@ export default function Home() {
       };
       setMessages((prev) => [...prev, assistantMessage]);
     } catch (error) {
-      console.error("Error sending message:", error);
+      if (process.env.NODE_ENV === "development") {
+        console.error("Error sending message:", error);
+      }
       const errorMessage: Message = {
         id: (Date.now() + 1).toString(),
         role: "assistant",
@@ -113,7 +115,9 @@ export default function Home() {
           )
         );
       } catch (error) {
-        console.error("Failed to submit feedback:", error);
+        if (process.env.NODE_ENV === "development") {
+          console.error("Failed to submit feedback:", error);
+        }
       }
     },
     [messages, sessionId]

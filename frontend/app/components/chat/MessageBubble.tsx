@@ -170,7 +170,9 @@ export function MessageBubble({
         onFeedback(message.id, feedbackType);
       }
     } catch (error) {
-      console.error("Failed to submit feedback:", error);
+      if (process.env.NODE_ENV === "development") {
+        console.error("Failed to submit feedback:", error);
+      }
       setLocalFeedback(null);
     } finally {
       setIsSubmitting(false);

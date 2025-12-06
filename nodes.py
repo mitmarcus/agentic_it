@@ -43,6 +43,12 @@ from utils.prompts import (
 logger = get_logger(__name__)
 
 
+def ensure_response_dict(shared: Dict) -> None:
+    """Ensure the response dictionary exists in shared store."""
+    if "response" not in shared:
+        shared["response"] = {}
+
+
 def _get_float_env(name: str) -> float:
     """Read a required float from environment variables. Raises ValueError if missing or invalid."""
     raw_value = os.getenv(name)
@@ -837,8 +843,7 @@ response_to_user: |
     
     def post(self, shared: Dict, prep_res: Dict, exec_res: Dict) -> str:
         """Write answer to response and update active topic."""
-        if "response" not in shared:
-            shared["response"] = {}
+        ensure_response_dict(shared)
         
         shared["response"]["text"] = exec_res.get("response_to_user", str(exec_res))
         shared["response"]["action_taken"] = "answer"
@@ -1227,8 +1232,7 @@ Think like a senior systems engineer who teaches while troubleshooting."""
             # Clear troubleshooting state
             shared.pop("troubleshoot_state", None)
             
-            if "response" not in shared:
-                shared["response"] = {}
+            ensure_response_dict(shared)
             
             shared["response"]["text"] = response_text
             shared["response"]["action_taken"] = "exit_troubleshoot"
@@ -1244,8 +1248,7 @@ Think like a senior systems engineer who teaches while troubleshooting."""
             
             shared["troubleshoot_state"]["escalated"] = True
             
-            if "response" not in shared:
-                shared["response"] = {}
+            ensure_response_dict(shared)
             
             shared["response"]["text"] = response_text
             shared["response"]["action_taken"] = "escalate"
@@ -1274,8 +1277,7 @@ Think like a senior systems engineer who teaches while troubleshooting."""
                 ts_state["current_hypothesis"] = hypothesis
             
             # Store response
-            if "response" not in shared:
-                shared["response"] = {}
+            ensure_response_dict(shared)
             
             shared["response"]["text"] = response_text
             shared["response"]["action_taken"] = "troubleshoot"
