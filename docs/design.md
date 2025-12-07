@@ -40,7 +40,7 @@ An **Agentic IT Support Chatbot** that:
 4. **Ticket Creation**: "As an employee with an unresolved issue, I want the bot to create a properly formatted ticket."
 
    - Example: After failed troubleshooting, bot offers to create ticket with collected context.
-   - **Status**: Not yet implemented - placeholder node exists.
+   - Expected: Bot creates Jira ticket with conversation history, troubleshooting steps, and system info.
 
 5. **Privacy Protection**: "As an IT admin, I want sensitive information redacted from logs and tickets."
 
@@ -298,6 +298,7 @@ LoadDocumentsNode → ChunkDocumentsNode → EmbedDocumentsNode → StoreInChrom
      - `HTMLParser` - Extracts text from HTML with style preservation
 
 9. **Status Retrieval** (`utils/status_retrieval.py`)
+
    - **Input**: None (reads from company status page)
    - **Output**: `List[Dict]` with event titles and messages
    - **Necessity**: Checks company network status for ongoing incidents
@@ -306,16 +307,28 @@ LoadDocumentsNode → ChunkDocumentsNode → EmbedDocumentsNode → StoreInChrom
      - `scrape_session()` - Main async scraping function
      - `format_status_results()` - Formats results for display
 
-### Not Yet Implemented
-
-10. **Jira Client** (`utils/jira_client.py`) ⚠️ **PLANNED**
-    - **Purpose**: Interface with Jira for ticket operations
-    - **Planned Functions**:
-      - `search_tickets(jql: str) -> List[dict]`
-      - `create_ticket(project: str, summary: str, description: str, **kwargs) -> dict`
-      - `update_ticket(ticket_id: str, fields: dict) -> dict`
-      - `add_comment(ticket_id: str, comment: str)`
-    - **Environment Variables**: `JIRA_URL`, `JIRA_USER`, `JIRA_API_TOKEN`, `JIRA_PROJECT`
+10. **Ticket Manager** (`utils/ticket_manager.py`)
+    - **Input**: Ticket dict, conversation history, session context
+    - **Output**: Jira ticket link or local file path
+    - **Necessity**: Creates support tickets in Jira with full conversation context
+    - **Implementation**: Uses Jira REST API v2 with Bearer token authentication
+    - **Functions**:
+      - `create_jira_issue(ticket: Dict) -> Optional[Dict]` - Creates ticket via REST API
+      - `write_ticket(ticket: Dict, conversation_history: List) -> Dict` - Saves locally + creates in Jira
+      - `add_attachment(log_file: Path, issue_key: str) -> bool` - Attaches conversation log
+      - `find_existing_ticket(shared: Dict, history: List) -> Optional[Dict]` - Prevents duplicates
+      - `close_issue(ticket_id: str) -> bool` - Auto-closes resolved tickets
+    - **Environment Variables**: `JIRA_URL`, `PROJECT_KEY`, `AIS_API_TOKEN`
+    - **Graceful Degradation**: Falls back to local ticket storage if Jira API unavailable
+    - **Exception Handling Design** (INTENTIONAL):
+      - All Jira API functions use `try/except` blocks that return `None`/`False` on failure
+      - This is **correct and intentional** - implements graceful degradation pattern
+      - Local ticket storage is the critical function (never fails)
+      - Jira integration is best-effort enhancement (may fail due to network, auth, downtime)
+      - Functions are NOT called directly from `Node.exec()`, so Node retry mechanism is not needed
+      - Called from `write_ticket()` → `TicketCreationNode.exec()` → always returns dict for `post()`
+      - This pattern allows system to continue working when Jira is down (better UX)
+      - Retrying Jira calls would waste API quota and time (inappropriate for this use case)
 
 ---
 
@@ -442,204 +455,503 @@ session_data = {
 
 All nodes follow the pattern: **Read in `prep()` → Process in `exec()` → Write in `post()`**
 
-### Node Specifications
+### Main Query Flow Nodes
 
 ---
 
-#### 1. RedactInputNode (NEW)
+#### 1. RedactInputNode
 
-- **Type**: Regular Node
-- **Purpose**: Remove sensitive data (passwords, tokens, API keys) from user input
+- **Purpose**: Remove sensitive data (passwords, tokens, API keys) from user input before processing
+- **Type**: Regular Node (no retries needed - redaction is deterministic)
+- **Utility Used**: `utils/redactor.py` - `redact_text()`
 - **Steps**:
-  - **prep**: Read `shared["user_query"]`
-  - **exec**: Call `redact_text(query)` from `utils/redactor.py`
+  - **prep**:
+    - Read `shared["user_query"]` (raw user input)
+    - Read `shared["session_id"]` for logging
+    - Return as dict for exec
+  - **exec**:
+    - Call `redact_text(query)` utility function
+    - Compare original vs redacted to detect if sensitive data was found
+    - Return `{"redacted_query": str, "had_sensitive_data": bool}`
   - **post**:
-    - Store original in `shared["original_query"]`
-    - Write redacted to `shared["user_query"]`
+    - Store original in `shared["original_query"]` (for audit trail)
+    - **Overwrite** `shared["user_query"]` with redacted version (protects downstream nodes)
     - Set `shared["had_sensitive_data"]` flag
+    - If redaction occurred, add `shared["redaction_notice"]` warning message
     - Return `"default"`
+
+**Rationale**: Runs first to ensure all downstream nodes work with sanitized input. Prevents sensitive data from being logged or sent to LLM APIs.
 
 ---
 
 #### 2. IntentClassificationNode
 
-- **Type**: Regular Node
-- **Purpose**: Classify user query intent for routing decisions
+- **Purpose**: Classify user query intent to help DecisionMaker route appropriately
+- **Type**: Regular Node (no retries - classification is fast and deterministic)
+- **Utility Used**: `utils/intent_classifier.py` - `classify_intent()`, `extract_keywords()`
 - **Steps**:
-  - **prep**: Read `shared["user_query"]`
-  - **exec**: Call `classify_intent(query)` utility
-  - **post**: Write `shared["intent"]`, return `"default"`
+  - **prep**:
+    - Read `shared["user_query"]` (already redacted from previous node)
+    - Return query string
+  - **exec**:
+    - Call `classify_intent(query)` - returns "informative" or "troubleshooting"
+    - Call `extract_keywords(query)` - returns list of IT-related keywords
+    - Return `{"intent": str, "keywords": List[str]}`
+  - **post**:
+    - Write `shared["intent"]` (used by DecisionMaker for routing bias)
+    - Write `shared["keywords"]` (used for search query expansion)
+    - Return `"default"`
+
+**Intent Definitions**:
+
+- **informative**: User wants information, how-to guides, explanations (e.g., "How do I set up VPN?")
+- **troubleshooting**: User has a problem/error to fix (e.g., "My VPN keeps disconnecting")
 
 ---
 
 #### 3. EmbedQueryNode
 
+- **Purpose**: Generate embedding vector for semantic search in knowledge base
 - **Type**: Regular Node
-- **Purpose**: Generate embedding for user query
-- **Max Retries**: 3
+- **Max Retries**: 3 (embedding model can occasionally fail)
+- **Wait**: 0 seconds (no rate limiting on local model)
+- **Utility Used**: `utils/embedding_local.py` - `get_embedding()`
 - **Steps**:
-  - **prep**: Read `shared["user_query"]`
-  - **exec**: Call `get_embedding(query)` utility
-  - **post**: Write `shared["query_embedding"]`, return `"default"`
+  - **prep**:
+    - Read `shared["user_query"]` (redacted query)
+    - Read `shared["session_id"]` for conversation memory lookup
+    - Read `shared.get("keywords", [])` from intent classification
+    - Get conversation history from `conversation_memory.get_history(session_id)`
+    - Detect follow-up queries (short queries in multi-turn context)
+    - Return enriched query context
+  - **exec**:
+    - **Follow-up Detection**: If query is short (≤5 words) and has active topic in memory, enrich query with topic context
+    - Call `get_embedding(query_with_context)` utility
+    - Validates embedding is non-zero (384-dim vector for all-MiniLM-L6-v2)
+    - Return embedding vector as `List[float]`
+  - **post**:
+    - Write `shared["query_embedding"]` (used by SearchKnowledgeBaseNode)
+    - Write `shared["enriched_query"]` if follow-up was detected
+    - Return `"default"`
+
+**Follow-up Handling**: Prevents context loss in multi-turn conversations (e.g., "how to find mac address" → "im on linux")
 
 ---
 
 #### 4. SearchKnowledgeBaseNode
 
+- **Purpose**: Retrieve relevant documents from ChromaDB using vector similarity search
 - **Type**: Regular Node
-- **Purpose**: Retrieve relevant documents from ChromaDB
-- **Max Retries**: 2
+- **Max Retries**: 2 (ChromaDB queries can occasionally timeout)
+- **Wait**: 1 second
+- **Utility Used**: `utils/chromadb_client.py` - `query_collection()`, `utils/reranker.py` - `rerank_results()`
 - **Steps**:
-  - **prep**: Read `shared["query_embedding"]`, `shared.get("search_count", 0)`
-  - **exec**: Query ChromaDB with embedding, top_k=5
+  - **prep**:
+    - Read `shared["query_embedding"]` (384-dim vector)
+    - Read `shared["user_query"]` (text for reranking)
+    - Read `shared.get("search_count", 0)` (prevent infinite loops)
+    - Validate embedding is non-zero
+    - Return as dict
+  - **exec**:
+    - **Step 1 - Vector Search**: Query ChromaDB with embedding, fetch `top_k * 3` candidates (e.g., 15 results)
+    - Filter by minimum score threshold (configurable via `RAG_MIN_SCORE`)
+    - **Step 2 - Reranking**: Use cross-encoder to rerank candidates based on query-document relevance
+    - **Step 3 - Neighbor Expansion**: For top result, fetch adjacent chunks for context continuity
+    - **Step 4 - Feedback Adjustment**: Apply user feedback scores to boost/penalize documents
+    - Return final top-k documents with scores and metadata
   - **post**:
-    - Write `shared["retrieved_docs"]`
-    - Increment `shared["search_count"]`
-    - Return `"default"`
+    - Write `shared["retrieved_docs"]` (list of dicts with content, metadata, scores)
+    - Increment `shared["search_count"]` (tracks iterations)
+    - If docs found, return `"docs_found"`, else return `"no_docs"`
+
+**Search Strategy**: Two-stage retrieval (vector search + reranking) ensures high relevance while maintaining speed.
 
 ---
 
-#### 5. DecisionMakerNode (Agent Node)
+#### 5. DecisionMakerNode (Agent)
 
-- **Type**: Regular Node with Agent pattern
-- **Purpose**: Decide next action based on context
-- **Max Retries**: 2, Wait: 1 second
+- **Purpose**: Decide next action based on context (implements Agent design pattern)
+- **Type**: Regular Node (Agent pattern)
+- **Max Retries**: 2
+- **Wait**: 1 second (rate limiting on LLM API)
+- **Utility Used**: `utils/call_llm_groq.py` - `call_llm()`, `utils/prompts.py` - decision prompts
 - **Steps**:
-  - **prep**: Read query, intent, docs, search_count, conversation_history
+  - **prep**:
+    - Read comprehensive context:
+      - `shared["user_query"]`, `shared["user_os"]`, `shared["intent"]`
+      - `shared["retrieved_docs"]`, `shared.get("status_results", [])`
+      - Conversation history from memory
+      - `shared.get("search_count", 0)`, `shared.get("turn_count", 1)`
+      - Troubleshooting state if in workflow
+    - Format RAG context from retrieved docs
+    - Build full decision context dict
+    - Return context
   - **exec**:
-    - Call LLM with decision prompt
-    - Available actions: `search_kb`, `answer`, `clarify`, `troubleshoot`, `not_implemented`
-    - Parse YAML response
+    - **Policy Check**: Evaluate confidence thresholds:
+      - Low doc confidence → bias toward "clarify"
+      - High doc confidence + troubleshooting intent → bias toward "troubleshoot"
+      - Rate limit errors → special handling
+    - Build decision prompt with:
+      - Context (query, intent, OS, history, docs, status)
+      - Action space (search_kb, answer, clarify, troubleshoot, search_tickets, create_ticket)
+      - Decision rules (max searches, confidence thresholds)
+    - Call LLM with structured YAML output format
+    - Parse YAML response to extract action and reasoning
+    - Validate action is in allowed set
+    - Return `{"action": str, "reasoning": str}`
   - **post**:
-    - Write `shared["decision"]`
-    - Return decision as action (routes to appropriate node)
+    - Write `shared["decision"]` (stores reasoning for audit)
+    - Write `shared["decision_reasoning"]` (for debugging)
+    - **Return action string** (routes flow to appropriate node)
+
+**Action Space**:
+
+- `search_kb`: Loop back to embed/search with refined query
+- `answer`: Generate answer from retrieved docs (→ GenerateAnswerNode)
+- `clarify`: Ask clarifying question (→ AskClarifyingQuestionNode)
+- `troubleshoot`: Start interactive troubleshooting (→ InteractiveTroubleshootNode)
+- `search_tickets`: Search Jira tickets (→ NotImplementedNode - planned)
+- `create_ticket`: Create support ticket (→ TicketCreationNode)
+
+**Safety**: Max search iterations (3), max conversation turns (20), escalation on failures.
 
 ---
 
 #### 6. GenerateAnswerNode
 
+- **Purpose**: Generate final answer using retrieved documents as context
 - **Type**: Regular Node
-- **Purpose**: Generate final answer using retrieved context
-- **Max Retries**: 2, Wait: 1 second
+- **Max Retries**: 2
+- **Wait**: 1 second
+- **Utility Used**: `utils/call_llm_groq.py` - `call_llm()`
 - **Steps**:
-  - **prep**: Read query, retrieved_docs, conversation_history, user_os, redaction_notice
-  - **exec**: Call LLM with answer generation prompt
-  - **post**: Write `shared["response"]`, return `"default"`
+  - **prep**:
+    - Read `shared["user_query"]`, `shared["user_os"]`
+    - Read `shared["retrieved_docs"]` (RAG context)
+    - Read conversation history from memory
+    - Read `shared.get("redaction_notice")` if sensitive data was removed
+    - Format RAG context with doc contents and metadata
+    - Build answer generation prompt
+    - Return context dict
+  - **exec**:
+    - Build prompt with:
+      - System role (IT support agent)
+      - User query and OS
+      - Retrieved documentation context
+      - Conversation history for continuity
+      - Instructions for OS-specific guidance
+      - URL formatting rules
+    - Call LLM with max_tokens=1024
+    - Validate response is non-empty
+    - Return answer string
+  - **post**:
+    - Write `shared["response"]` (final answer)
+    - If redaction_notice exists, prepend warning to response
+    - Set `shared["is_clarifying"] = False`
+    - Return `"default"`
+
+**Answer Quality**: Uses retrieved docs as authoritative source, avoids hallucination by grounding in documentation.
 
 ---
 
 #### 7. AskClarifyingQuestionNode
 
+- **Purpose**: Ask specific clarifying questions when query is ambiguous
 - **Type**: Regular Node
-- **Purpose**: Ask user for more details when query is ambiguous
-- **Max Retries**: 2, Wait: 1 second
+- **Max Retries**: 2
+- **Wait**: 1 second
+- **Utility Used**: `utils/call_llm_groq.py` - `call_llm()`
 - **Steps**:
-  - **prep**: Read query, intent, retrieved_docs, conversation_history
-  - **exec**: Call LLM to generate clarifying question
+  - **prep**:
+    - Read `shared["user_query"]`, `shared["intent"]`
+    - Read `shared["retrieved_docs"]` (partial matches)
+    - Read conversation history to avoid redundant questions
+    - Return context dict
+  - **exec**:
+    - Build clarification prompt with:
+      - User's original question
+      - Retrieved doc summaries (what was found)
+      - What information is missing
+      - Conversation history (don't ask what's already known)
+      - Instructions to ask ONE specific question
+    - Call LLM
+    - Validate question format (no generic "Can you provide more details?")
+    - Return clarifying question
   - **post**:
-    - Write `shared["response"]`
-    - Set `shared["is_clarifying"] = True`
+    - Write `shared["response"]` (question for user)
+    - Set `shared["is_clarifying"] = True` (signals UI to show input field)
+    - Set `shared["needs_input"] = True`
     - Return `"default"`
+
+**Clarification Strategy**: Asks specific, actionable questions (e.g., "Which operating system are you using?" not "Can you clarify?")
 
 ---
 
 #### 8. InteractiveTroubleshootNode
 
+- **Purpose**: Guide user through step-by-step troubleshooting with progress tracking
 - **Type**: Regular Node
-- **Purpose**: Guide user through troubleshooting steps
-- **Max Retries**: 2, Wait: 1 second
+- **Max Retries**: 2
+- **Wait**: 1 second
+- **Utility Used**: `utils/call_llm_groq.py` - `call_llm()`, `utils/conversation_memory.py` - workflow state
 - **Steps**:
-  - **prep**: Read query, docs, conversation_history, workflow_state from memory
+  - **prep**:
+    - Read `shared["user_query"]`, `shared["user_os"]`
+    - Read `shared["retrieved_docs"]` (troubleshooting guides)
+    - Read conversation history
+    - **Load workflow state** from `conversation_memory.get_workflow_state(session_id)`
+    - Determine if starting new workflow or continuing existing
+    - Return context dict with workflow state
   - **exec**:
-    - Generate troubleshooting steps if new
-    - Advance steps based on user feedback
-    - Call LLM to format response
+    - **Intent Detection**: Parse user response for exit/escalate/continue signals
+      - "exit", "stop", "never mind" → exit workflow
+      - "doesn't work", "still broken" → escalate to ticket creation
+      - Otherwise → continue to next step
+    - **Step Generation** (if new workflow):
+      - Call LLM to create 3-5 troubleshooting steps based on issue and docs
+      - Format with OS-specific commands/instructions
+    - **Step Progression** (if continuing):
+      - Advance to next step
+      - Track failed steps (for escalation threshold)
+      - Format current step with clear instructions
+    - Call LLM to generate friendly response with current step
+    - Return `{"response": str, "workflow_state": dict, "action": str}`
   - **post**:
-    - Write `shared["response"]`
-    - Update `shared["troubleshoot_state"]`
-    - Set `shared["needs_input"] = True`
-    - Return `"default"`
+    - Write `shared["response"]` (current troubleshooting step)
+    - **Update workflow state** in conversation memory:
+      - Current step index
+      - Failed step count
+      - Issue description
+      - Steps list
+    - Set `shared["needs_input"] = True` (wait for user feedback)
+    - Set `shared["in_troubleshoot"] = True`
+    - Return action: `"default"`, `"exit"`, or `"escalate"`
+
+**Workflow Tracking**: Maintains state across turns, escalates to ticket creation after N failed steps.
 
 ---
 
 #### 9. FormatFinalResponseNode
 
-- **Type**: Regular Node
-- **Purpose**: Format response with metadata for API output
+- **Purpose**: Format response with metadata for consistent API output
+- **Type**: Regular Node (no retries - formatting is deterministic)
+- **Utility Used**: None (pure formatting)
 - **Steps**:
-  - **prep**: Read response, is_clarifying, needs_input, had_sensitive_data
-  - **exec**: Compile response object with all flags
-  - **post**: Write final `shared["response"]`, return `"default"`
-
----
-
-#### 10. NotImplementedNode
-
-- **Type**: Regular Node
-- **Purpose**: Placeholder for unimplemented features (ticket creation, Jira integration)
-- **Steps**:
-  - **prep**: Read query
-  - **exec**: Return message indicating feature is not available
-  - **post**: Write `shared["response"]`, return `"default"`
-
----
-
-#### 11. StatusQueryNode (NEW)
-
-- **Type**: AsyncNode
-- **Purpose**: Check company network status page for ongoing incidents
-- **Steps**:
-  - **prep_async**: Read `shared["user_query"]`
-  - **exec_async**: Call `scrape_session()` with Playwright
-  - **post_async**: Write `shared["status_results"]`, return `"default"`
-
----
-
-### Indexing Flow Nodes
-
-#### 12. LoadDocumentsNode
-
-- **Type**: Regular Node
-- **Purpose**: Load documents from source directory
-- **Steps**:
-  - **prep**: Read `shared["source_dir"]`, `shared.get("source_file")`
+  - **prep**:
+    - Read `shared["response"]` (text from previous node)
+    - Read `shared.get("is_clarifying", False)`
+    - Read `shared.get("needs_input", False)`
+    - Read `shared.get("had_sensitive_data", False)`
+    - Read `shared.get("session_id")`
+    - Return dict with all flags
   - **exec**:
-    - Parse files using `document_parser.py`
-    - Handle PDF and HTML formats
-  - **post**: Write `shared["documents"]`, return `"default"`
+    - Compile response object:
+      ```python
+      {
+        "answer": response_text,
+        "needs_input": bool,
+        "is_clarifying": bool,
+        "had_sensitive_data": bool,
+        "session_id": str
+      }
+      ```
+    - No LLM call - pure data transformation
+    - Return formatted response
+  - **post**:
+    - **Save to conversation memory**: `conversation_memory.add_message(session_id, "assistant", response)`
+    - Update `shared["response"]` with formatted object
+    - Increment `shared["turn_count"]`
+    - Return `"default"`
+
+**API Contract**: Ensures consistent response format for frontend consumption.
 
 ---
 
-#### 13. ChunkDocumentsNode
+#### 10. TicketCreationNode
 
-- **Type**: BatchNode
-- **Purpose**: Split documents into semantic chunks
-- **Steps**:
-  - **prep**: Return list from `shared["documents"]`
-  - **exec(doc)**: Call `chunk_text(doc["text"])` for each document
-  - **post**: Write `shared["chunks"]` (flattened list), return `"default"`
-
----
-
-#### 14. EmbedDocumentsNode
-
-- **Type**: BatchNode
-- **Purpose**: Generate embeddings for all chunks
-- **Steps**:
-  - **prep**: Return `shared["chunks"]`
-  - **exec(chunk)**: Call `get_embedding(chunk)` for each chunk
-  - **post**: Write `shared["embeddings"]`, return `"default"`
-
----
-
-#### 15. StoreInChromaDBNode
-
+- **Purpose**: Create support ticket in Jira with conversation context
 - **Type**: Regular Node
-- **Purpose**: Store embedded chunks in ChromaDB
+- **Max Retries**: 1 (ticket creation should fail fast)
+- **Wait**: 0 seconds
+- **Utility Used**: `utils/ticket_manager.py` - `write_ticket()`, `create_jira_issue()`
 - **Steps**:
-  - **prep**: Read chunks, embeddings, metadata from shared
-  - **exec**: Call `insert_documents()` from `chromadb_client.py`
-  - **post**: Write `shared["index_result"]`, return `"default"`
+  - **prep**:
+    - Read `shared["user_query"]`, `shared["session_id"]`
+    - Read conversation history from memory
+    - Read `shared.get("troubleshoot_state")` if escalating from troubleshooting
+    - Check for existing ticket using `find_existing_ticket()`
+    - Return context dict
+  - **exec**:
+    - If existing ticket found, return link (avoid duplicates)
+    - Build ticket object:
+      ```python
+      {
+        "summary": "User issue: {query_summary}",
+        "description": "Full conversation context...",
+        "issue_type": "IT Help",
+        "priority": "L3-Medium"
+      }
+      ```
+    - Call `write_ticket()` to save locally and create in Jira
+    - Call `create_jira_issue()` to submit to Jira API
+    - If Jira unavailable, save locally only
+    - Return ticket result with link
+  - **post**:
+    - Write `shared["ticket_link"]` (Jira URL or local file path)
+    - Format response message with ticket link
+    - Write `shared["response"]`
+    - Return `"default"`
+
+**Jira Integration**: Creates ticket with full conversation log, attaches troubleshooting context if available.
+
+---
+
+#### 11. NotImplementedNode
+
+- **Purpose**: Placeholder for features not yet implemented (ticket search, etc.)
+- **Type**: Regular Node
+- **Utility Used**: None
+- **Steps**:
+  - **prep**:
+    - Read `shared["user_query"]`
+    - Read feature name from node params
+    - Return feature name
+  - **exec**:
+    - Generate user-friendly message: "This feature ({feature_name}) is not yet available. Please contact IT support directly."
+    - Return message
+  - **post**:
+    - Write `shared["response"]`
+    - Return `"default"`
+
+---
+
+#### 12. StatusQueryNode
+
+- **Purpose**: Check company network status page for ongoing incidents
+- **Type**: AsyncNode (web scraping requires async I/O)
+- **Max Retries**: 2
+- **Wait**: 2 seconds
+- **Utility Used**: `utils/status_retrieval.py` - `scrape_session()` (Playwright)
+- **Steps**:
+  - **prep_async**:
+    - Read `shared["user_query"]` (to check if status query is relevant)
+    - Return query
+  - **exec_async**:
+    - Call `scrape_session()` to fetch status page with Playwright
+    - Parse for incident titles and messages
+    - Filter for active incidents only
+    - Return list of incidents
+  - **post_async**:
+    - Write `shared["status_results"]` (used by DecisionMaker context)
+    - Format incidents for display
+    - Return `"default"`
+
+**Use Case**: Detects major outages before answering user questions (e.g., "VPN is down" → show known incident).
+
+---
+
+### Offline Indexing Flow Nodes
+
+#### 13. LoadDocumentsNode
+
+- **Purpose**: Load and parse documents from source directory
+- **Type**: Regular Node
+- **Max Retries**: 1
+- **Utility Used**: `utils/document_parser.py` - `parse_document()`
+- **Steps**:
+  - **prep**:
+    - Read `shared["source_dir"]` (path to docs folder)
+    - Read `shared.get("source_file")` if indexing single file
+    - Return source path
+  - **exec**:
+    - Scan directory for supported files (.pdf, .html, .md)
+    - For each file, call `parse_document(filepath)`
+    - Extract text and metadata (title, source, date)
+    - Return list of document dicts
+  - **post**:
+    - Write `shared["documents"]` (list of parsed docs)
+    - Log count and file types
+    - Return `"default"`
+
+---
+
+#### 14. ChunkDocumentsNode
+
+- **Purpose**: Split documents into semantically coherent chunks
+- **Type**: BatchNode (processes each document independently)
+- **Max Retries**: 1
+- **Utility Used**: `utils/chunker.py` - `chunk_text()`
+- **Steps**:
+  - **prep**:
+    - Read `shared["documents"]`
+    - Return list of documents (BatchNode iterates over this)
+  - **exec(document)**:
+    - Extract `document["content"]` and `document["metadata"]`
+    - Call `chunk_text(content, chunk_size=512, chunk_overlap=128)`
+    - Uses semantic chunking (groups sentences by embedding similarity)
+    - For each chunk, create dict with content + metadata
+    - Add chunk_index and total_chunks to metadata
+    - Return list of chunk dicts for this document
+  - **post**:
+    - Receives `exec_res_list` (list of lists of chunks)
+    - Flatten into single list: `all_chunks`
+    - Write `shared["all_chunks"]`
+    - Log total chunk count
+    - Return `"default"`
+
+**Chunking Strategy**: Semantic chunking preserves context continuity (better than fixed-size splitting).
+
+---
+
+#### 15. EmbedDocumentsNode
+
+- **Purpose**: Generate embeddings for all document chunks (optimized batch processing)
+- **Type**: Regular Node (NOT BatchNode - uses true batch encoding for 6-7x speedup)
+- **Max Retries**: 3
+- **Utility Used**: `utils/embedding_local.py` - `get_embeddings_batch()`
+- **Steps**:
+  - **prep**:
+    - Read `shared["all_chunks"]` (full list of chunks)
+    - Extract text content from each chunk
+    - Return list of texts
+  - **exec**:
+    - Call `get_embeddings_batch(texts, batch_size=32)`
+    - **TRUE batch encoding**: Single forward pass for all texts (6-7x faster than per-chunk)
+    - Returns list of 384-dim vectors
+    - Return embeddings list
+  - **post**:
+    - Write `shared["embeddings"]` (list of vectors, same order as chunks)
+    - Log embedding count
+    - Return `"default"`
+
+**Performance**: Changed from BatchNode to Regular Node with batch utility for massive speedup.
+
+---
+
+#### 16. StoreInChromaDBNode
+
+- **Purpose**: Insert chunks and embeddings into ChromaDB collection
+- **Type**: Regular Node
+- **Max Retries**: 2
+- **Wait**: 1 second
+- **Utility Used**: `utils/chromadb_client.py` - `insert_documents()`
+- **Steps**:
+  - **prep**:
+    - Read `shared["all_chunks"]` (chunk dicts with content and metadata)
+    - Read `shared["embeddings"]` (vectors in same order)
+    - Validate counts match
+    - Return dict with chunks and embeddings
+  - **exec**:
+    - Build document IDs: `{source_file}-{chunk_index}`
+    - Call `insert_documents(collection, ids, embeddings, documents, metadatas)`
+    - ChromaDB upserts (replaces if ID exists)
+    - Return insertion count
+  - **post**:
+    - Write `shared["index_result"]` with count and status
+    - Log success message
+    - Return `"default"`
+
+**Idempotency**: Using source-based IDs allows re-indexing without duplicates.
 
 ---
 
@@ -690,14 +1002,20 @@ All nodes follow the pattern: **Read in `prep()` → Process in `exec()` → Wri
 - ✅ Implement document re-indexing and deletion
 - ✅ Test file upload and status checking
 
-### Phase 6: Jira Integration ⚠️ PLANNED
+### Phase 6: Jira Integration ✅ COMPLETE
 
-- ⚠️ Implement Jira client utility (`utils/jira_client.py`)
-- ⚠️ Implement ticket search node
-- ⚠️ Implement ticket creation node
-- ⚠️ Implement major incident detection
-- ⚠️ Replace `NotImplementedNode` with actual ticket functionality
-- ⚠️ Test ticket operations end-to-end
+- ✅ Implement Jira ticket utility (`utils/ticket_manager.py`)
+  - `create_jira_issue()` - Creates ticket via Jira REST API
+  - `write_ticket()` - Saves ticket locally with conversation log
+  - `add_attachment()` - Attaches conversation log to Jira ticket
+  - `find_existing_ticket()` - Prevents duplicate ticket creation
+  - `close_issue()` - Auto-closes tickets for resolved issues
+- ✅ Implement `TicketCreationNode` with LLM-powered ticket generation
+- ✅ Replace `NotImplementedNode` placeholder with actual `TicketCreationNode`
+- ✅ Integrate ticket creation into decision maker flow
+- ✅ Add duplicate detection (checks conversation history for existing tickets)
+- ✅ Add auto-close for issues resolved during troubleshooting
+- ✅ Test ticket operations end-to-end
 
 ---
 

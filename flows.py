@@ -6,7 +6,7 @@ Flows orchestrate nodes into complete workflows.
 from langfuse_tracing import trace_flow, TracingConfig
 from utils.logger import get_logger
 
-from typing import Union
+from typing import Union, overload, Literal
 from cremedelacreme import AsyncFlow, Flow
 from nodes import (
     # Company laptop only nodes
@@ -179,12 +179,12 @@ class NetworkStatusFlow(AsyncFlow):
         logger.info("Network status flow created with tracing")
 
 
-def create_network_status_flow() -> Flow:
+def create_network_status_flow() -> AsyncFlow:
     """
     Create the network status flow.
     
     Returns:
-        Configured Flow instance with tracing
+        Configured AsyncFlow instance with tracing
     """
     return NetworkStatusFlow()
 
@@ -237,6 +237,16 @@ def create_test_query_flow() -> Flow:
 # ============================================================================
 
 _flow_cache: dict = {}
+
+
+@overload
+def get_flow(flow_type: Literal["status"]) -> AsyncFlow: ...
+
+@overload
+def get_flow(flow_type: Literal["query", "indexing", "test"]) -> Flow: ...
+
+@overload
+def get_flow(flow_type: str = "query") -> Union[Flow, AsyncFlow]: ...
 
 
 def get_flow(flow_type: str = "query") -> Union[Flow, AsyncFlow]:

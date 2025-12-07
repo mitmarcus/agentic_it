@@ -121,7 +121,12 @@ async def scrape_session():
         page = await browser.new_page()
         
         try:
-            await page.goto(os.getenv("STIBO_STATUS_URL"))
+            status_url = os.getenv("STIBO_STATUS_URL")
+            if not status_url:
+                print("STIBO_STATUS_URL not configured in environment variables")
+                return None
+                
+            await page.goto(status_url)
             await page.wait_for_load_state('networkidle')
             
             load_dotenv()

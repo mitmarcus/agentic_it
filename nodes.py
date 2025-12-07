@@ -26,11 +26,6 @@ from utils.chunker import truncate_to_token_limit
 from utils.redactor import redact_text
 from utils.status_retrieval import format_status_results
 from utils.ticket_manager import find_existing_ticket, write_ticket
-
-# Configure logging
-logging.basicConfig(
-    level=os.getenv("LOG_LEVEL", "INFO"),
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 from utils.reranker import rerank_results
 from utils.feedback import apply_feedback_adjustments
 from utils.query_expansion import expand_query, generate_hypothetical_answer
