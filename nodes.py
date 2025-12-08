@@ -43,6 +43,7 @@ from utils.prompts import (
     RATE_LIMIT_WITH_DOCS_MESSAGE,
     GENERIC_ERROR_MESSAGE,
     GENERIC_CLARIFY_MESSAGE,
+    USER_ACTIONABLE_FILTER,
     os_awareness_instruction,
     get_decision_rules,
     parse_yaml_response,
@@ -836,6 +837,8 @@ CONVERSATION HISTORY:
 KNOWLEDGE BASE DOCUMENTS:
 {context['rag_context'] or 'No relevant documents found.'}
 
+{USER_ACTIONABLE_FILTER}
+
 ### CRITICAL INSTRUCTIONS
 1. **OS PRIORITY**: If user explicitly mentions an OS (Windows/Linux/Mac), provide instructions for THAT OS ONLY, even if docs are for a different OS. If no docs match their OS, say "I don't have specific {target_os} instructions. Please contact IT support."
 2. **IF USER CONFIRMS (says "yes", "correct", etc.)**: Look at the conversation history to understand what they're confirming, then provide the SOLUTION from the knowledge base documents. DO NOT ask for more details.
@@ -844,6 +847,7 @@ KNOWLEDGE BASE DOCUMENTS:
 5. **USE THE DOCS**: The solution is in the knowledge base. Use it!
 6. **OS AWARENESS**: {os_instruction}
 7. **URLs**: {URL_RULES}
+8. **FILTER ADMIN TASKS**: When extracting steps from documentation, AUTOMATICALLY SKIP any physical/administrative tasks (router checks, hardware placement, infrastructure tasks). Only include steps the user can perform from their workstation.
 
 ### WHAT NOT TO DO
 - DON'T say "However, since your current response is just 'yes'..."
@@ -852,6 +856,8 @@ KNOWLEDGE BASE DOCUMENTS:
 - DON'T give generic troubleshooting if docs have specific steps
 - DON'T start with "I found instructions for X but not Y" - just give the answer with a note at the end
 - DON'T repeat the OS disclaimer multiple times in the same response
+- DON'T include router resets, physical checks, or any infrastructure tasks
+- DON'T suggest tasks requiring IT administrator access
 
 ### OUTPUT FORMAT (YAML)
 ```yaml
@@ -1176,16 +1182,12 @@ You are an intelligent troubleshooting assistant for {COMPANY_NAME}. Your job is
 - If user is engaged and cooperative → continue_troubleshoot
 - NEVER repeat a failed step - pivot to different approach
 
-### USER-ACTIONABLE FILTER (CRITICAL)
-The user is an END-USER at their computer, NOT an IT administrator. ONLY suggest steps they can perform:
-INCLUDE: Software settings, app restarts, network reconnection, device restart, checking settings panels
-INCLUDE: Clearing cache, updating apps, changing configurations in their control
-EXCLUDE: Checking router hardware, server-side fixes
-EXCLUDE: Physical infrastructure checks (router placement, overheating, power cycling network equipment)
-EXCLUDE: Admin tasks requiring elevated access (firmware updates, network configuration, server restarts)
-If documentation contains IT-admin steps, SKIP them and focus only on user-actionable troubleshooting.
+{USER_ACTIONABLE_FILTER}
+
+### ADDITIONAL TROUBLESHOOTING GUIDANCE
 - Use official documentation when available, but explain the reasoning
 - Start with most common/simple causes before rare/complex ones
+- If ALL available solutions require admin access, choose 'escalate' action and explain why
 
 ### DIAGNOSTIC REASONING FRAMEWORK
 Hardware issues: Power → Connections → Drivers → Settings → Hardware failure

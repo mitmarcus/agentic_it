@@ -86,6 +86,35 @@ COMMON_DONTS = """### WHAT NOT TO DO
 - DON'T say "However, since your current response is just 'yes'..."
 - DON'T give generic troubleshooting if docs have specific steps"""
 
+# User actionable filter - what end users CAN and CANNOT do
+USER_ACTIONABLE_FILTER = """### CRITICAL: END-USER ACTIONABLE STEPS ONLY
+The user is an END-USER at their workstation, NOT an IT administrator with physical access to infrastructure.
+
+✅ INCLUDE (User CAN do):
+- Software/app actions: Restart applications, clear cache, update software, change app settings
+- Device actions: Restart computer/device, check device settings, reconnect to network
+- Account actions: Reset passwords, verify credentials, check account settings
+- Browser actions: Clear cookies, disable extensions, try different browser
+- Network actions: Disconnect/reconnect WiFi, forget and rejoin network, check WiFi settings
+- Documentation: Check knowledge base articles, follow software guides
+- Communication: Contact IT support, submit tickets, report issues
+
+❌ EXCLUDE (User CANNOT do - SKIP THESE):
+- Physical hardware: Moving/relocating routers, checking router temperature, physical cable checks
+- Router operations: Router resets, router configuration, checking router lights/LEDs
+- Infrastructure: Server restarts, network equipment management, power cycling network devices
+- Hardware placement: Router positioning, avoiding interference sources, antenna adjustments
+- Admin privileges: Firmware updates, system-level configurations, server-side fixes
+- Environmental: Room temperature checks, proximity to other electronics
+- Physical access: Checking wiring closets, server rooms, network equipment
+
+⚠️ IMPORTANT ENFORCEMENT:
+- If documentation contains physical/admin steps, AUTOMATICALLY SKIP them
+- NEVER suggest router resets, physical checks, or infrastructure tasks
+- Focus ONLY on what the user can do from their computer/device
+- If the only solutions are admin tasks, say: "This requires IT administrator assistance. Please contact [contact info]."
+- Do NOT include admin tasks even if user explicitly requests them - explain they need IT support instead"""  
+
 # YAML output format helper
 def yaml_output_format(fields: dict[str, str]) -> str:
     """
@@ -183,6 +212,16 @@ def parse_yaml_response(response: str) -> str:
         return response.split("```yaml")[1].split("```")[0].strip()
     return response
 
+
+# Make USER_ACTIONABLE_FILTER available for import
+__all__ = [
+    "COMPANY_NAME", "SYSTEM_ROLE", "COMMON_ASSUMPTIONS", "COMMON_DONTS",
+    "URL_RULES", "CLARIFY_BAD_EXAMPLES", "CLARIFICATION_RULES",
+    "DECISION_MAKER_ROLE", "RATE_LIMIT_MESSAGE", "RATE_LIMIT_WITH_DOCS_MESSAGE",
+    "GENERIC_ERROR_MESSAGE", "GENERIC_CLARIFY_MESSAGE", "TROUBLESHOOT_ROLE",
+    "USER_ACTIONABLE_FILTER", "os_awareness_instruction", "get_decision_rules",
+    "parse_yaml_response", "yaml_output_format", "context_header", "detect_explicit_os"
+]
 
 def context_header(
     user_query: str,
