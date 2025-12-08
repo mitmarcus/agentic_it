@@ -17,16 +17,30 @@ IntentType = Literal["informative", "troubleshooting"]
 # Use frozensets for O(1) lookup
 TROUBLESHOOTING_KEYWORDS = frozenset([
     "error", "issue", "problem", "not working", "broken", "failed",
-    "can't", "cannot", "unable", "doesn't work", "won't", "crash",
+    "can't", "cannot", "unable", "doesn't work", "won't", "wont", "crash",
     "bug", "fix", "troubleshoot", "debug", "solve", "help me",
     "stuck", "freeze", "freezing", "slow", "hang", "hanging",
-    "fail", "failing", "stopped", "disconnect", "disconnected"
+    "fail", "failing", "stopped", "disconnect", "disconnected",
+    # Repetitive action indicators
+    "keeps", "repeatedly", "constantly", "always", "continuously",
+    "keep", "still", "again", "over and over",
+    # Quality/performance complaints
+    "expires", "quickly", "often", "frequently", "too much",
+    "too little", "too long", "too short", "too slow", "too fast",
+    # Additional typo variations
+    "dont", "doesnt", "cant", "wont",
+    # Negative state indicators
+    "not being", "not getting", "not receiving", "not arriving"
 ])
 
 # Action words that suggest troubleshooting context
 TROUBLESHOOTING_ACTIONS = frozenset([
     "reset", "restart", "reinstall", "update", "configure",
-    "change", "modify", "adjust", "repair", "recover"
+    "change", "modify", "adjust", "repair", "recover",
+    # Problem-indicating actions
+    "asking", "prompting", "requesting", "appearing", "showing",
+    "popping up", "blocking", "preventing", "stopping",
+    "jamming", "timing out", "rejecting", "denying"
 ])
 
 # Informative patterns - user seeking information, not fixing a problem
@@ -62,6 +76,19 @@ def classify_intent(query: str) -> str:
     for keyword in TROUBLESHOOTING_ACTIONS:
         if keyword in query_lower:
             troubleshooting_score += 0.5
+    
+    # Pattern-based detection for repetitive problems
+    # "keeps [verb]ing" or "keeps [verb]" patterns
+    if re.search(r'\bkeep(?:s)?\s+\w+(?:ing|ed)?\b', query_lower):
+        troubleshooting_score += 1.5  # Strong signal
+    
+    # Passive voice problem patterns: "is/are/am not [verb]ing"
+    if re.search(r'\b(?:is|are|am|was|were)\s+not\s+\w+(?:ing|ed)\b', query_lower):
+        troubleshooting_score += 1.0
+    
+    # Negative patterns: "[something] not [verb]"
+    if re.search(r'\bnot\s+(?:working|sending|receiving|loading|opening|connecting|responding)\b', query_lower):
+        troubleshooting_score += 1.0
     
     # Check informative signals
     for keyword in INFORMATIVE_KEYWORDS:
