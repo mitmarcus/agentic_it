@@ -6,6 +6,7 @@ import os
 # Disable tokenizers' parallelism to avoid fork deadlock warnings
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
+import re
 import uuid
 from datetime import datetime
 from contextlib import asynccontextmanager
@@ -299,6 +300,11 @@ async def process_query(request: QueryRequest):
     
     # Generate or use provided session ID
     session_id = request.session_id or str(uuid.uuid4())
+    
+    # Validate session_id format if provided by user
+    if request.session_id and not re.match(r'^[a-zA-Z0-9_-]{1,100}$', request.session_id):
+        raise ValueError("Invalid session_id format. Use alphanumeric characters, hyphens, or underscores (max 100 chars)")
+    
     user_id = request.user_id or "anonymous"
     user_os = request.user_os or "unknown"
     
