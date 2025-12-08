@@ -765,23 +765,24 @@ Think carefully and make the best decision for the user."""
         """Write decision and return action."""
         shared["decision"] = exec_res
         
-        # If we're in an active troubleshooting session, continue with troubleshoot node
-        # to let it handle user responses (confirmations, "it's fixed", etc.)
-        if prep_res.get("in_troubleshoot", False):
-            logger.info(f"In active troubleshooting session (step {prep_res.get('troubleshoot_step', 0)}), routing to troubleshoot node")
-            return "troubleshoot"
-        
-        # Track search attempts to prevent infinite loops
+        # Track search attempts to prevent infinite loops (check FIRST, before troubleshoot routing)
         if exec_res["action"] == "search_kb":
             search_count = shared.get("search_count", 0)
             max_searches = POLICY_LIMITS["max_turns"]
             
             if search_count >= max_searches:
-                logger.warning(f"Max search attempts ({max_searches}) reached, forcing answer")
+                logger.warning(f"Max search attempts ({max_searches}) reached, forcing answer (even during troubleshooting)")
                 return "answer"  # Force answer instead of more searching
             
             shared["search_count"] = search_count + 1
             logger.debug(f"Search attempt {search_count + 1}/{max_searches}")
+        
+        # If we're in an active troubleshooting session, continue with troubleshoot node
+        # to let it handle user responses (confirmations, "it's fixed", etc.)
+        # NOTE: This check comes AFTER loop protection to ensure max_searches is enforced
+        if prep_res.get("in_troubleshoot", False):
+            logger.info(f"In active troubleshooting session (step {prep_res.get('troubleshoot_step', 0)}), routing to troubleshoot node")
+            return "troubleshoot"
         
         return exec_res["action"]
 
@@ -1702,8 +1703,8 @@ class TicketCreationNode(Node):
                 if m:
                     json_str = m.group(1)
                 else:
-                    # try to find any JSON object
-                    m = re.search(r'(\{[\s\S]*\})', response_text)
+                    # try to find any JSON object (non-greedy to avoid capturing extra content)
+                    m = re.search(r'(\{(?:[^{}]|\{[^{}]*\})*\})', response_text)
                     if m:
                         logger.info("Found JSON in response (no code block)")
                         json_str = m.group(1)
