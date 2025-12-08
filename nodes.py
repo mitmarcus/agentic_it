@@ -17,7 +17,7 @@ from cremedelacreme import AsyncNode, Node, BatchNode
 from core.llm_config import get_llm_config
 
 # Import utilities
-from utils.call_llm_groq import call_llm
+from utils.call_llm import call_llm
 from utils.embedding_local import get_embedding
 from utils.intent_classifier import classify_intent, extract_keywords
 from utils.conversation_memory import conversation_memory
@@ -676,17 +676,18 @@ Current Workflow State: {context['workflow_status']}"""
 6.  clarify
     Description: Ask user for specific details to better understand the problem
     When to use:
-    - User query contains ambiguous terms (e.g., "it", "this", "the problem")
-    - Missing critical information (error codes, software versions, symptoms)
-    - Multiple interpretations of the problem are possible
+    - User query is extremely vague ("it", "this", "the problem" with no context)
+    - Query is just one word like "help" or "broken"
+    - ONLY use if intent = 'informative' AND docs don't match query
 
 ### DECISION RULES & GUARDRAILS
-- **INTENT-BASED ROUTING**: If intent = 'troubleshooting' AND no clear solution in docs → prefer 'troubleshoot' action. If intent = 'informative' → prefer 'answer' or 'search_kb'.
+- **CRITICAL - TROUBLESHOOTING MODE**: If intent = 'troubleshooting', you MUST choose either 'troubleshoot' or 'answer'. NEVER choose 'clarify' for troubleshooting intent - users with problems need solutions, not clarification questions.
+- **INTENT-BASED ROUTING**: 
+  * If intent = 'troubleshooting' AND docs have step-by-step fix → 'answer' with the fix
+  * If intent = 'troubleshooting' AND no clear fix → 'troubleshoot' (interactive diagnostic)
+  * If intent = 'informative' → prefer 'answer' or 'search_kb'
 - If any active network issues match user's issue → answer
 - IMPORTANT: You have searched {context['search_count']} times (max: {context['max_searches']}). If at max, you MUST choose 'answer' (with best available info), 'clarify' or 'create_ticket', NOT 'search_kb'
-- If intent = 'informative' AND retrieved document provides a clear, direct answer → answer
-- If intent = 'troubleshooting' AND docs have step-by-step fix → answer with the fix
-- If intent = 'troubleshooting' AND no clear fix in docs → troubleshoot (interactive diagnostic)
 - If user message contains explicit error codes, logs, or attachments → troubleshoot (unless 'search_kb' finds an exact-match).
 - If user explicitly requests 'talk to human', 'create ticket', or 'escalate', choose 'create_ticket'.
 - Use 'create_ticket' after other resolution paths ('search_kb', troubleshoot) are exhausted, if the issue requires privileges/physical access, or if the issue is resolved.
