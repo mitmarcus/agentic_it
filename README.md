@@ -19,8 +19,8 @@ The system uses agentic decision-making and RAG (Retrieval-Augmented Generation)
 - ✅ **Interactive Troubleshooting**: Guided step-by-step workflows
 - ✅ **Observability & Tracing**: Full workflow observability with Langfuse integration
 - ✅ **OS Detection**: Automatically detects user's OS and provides platform-specific instructions
-- 🚧 **Jira Integration**: Ticket creation and search
-- 🚧 **Major Incident Detection**: Alerts about known outages
+- ✅ **Jira Integration**: Automated ticket creation with context and troubleshooting history
+- ✅ **Network Status Monitoring**: Async status page scraping for incident detection (Playwright-based)
 
 ## 📋 Prerequisites
 
@@ -46,34 +46,36 @@ cp .env.sample .env
 ### 2. Start Services
 
 ```bash
-# Start ChromaDB and Chatbot services
-docker-compose up -d
+# Build and start all services (ChromaDB + Chatbot + Frontend)
+docker-compose up -d --build
 
 # View logs
 docker-compose logs -f chatbot
+
+# Check health
+curl http://localhost:8000/health
 ```
 
 ### 3. Index Documents
 
 ```bash
-# Place your IT documentation in data/docs/ (in the docker container)
-# Then index them:
-curl -X POST http://localhost:8000/index
+# Upload new documents (HTML, PDF, TXT, MD)
+curl -X POST http://localhost:8000/upload \
+  -F "files=@/path/to/document.html" \
+  -F "files=@/path/to/guide.pdf"
+
+# Check collection stats
+curl http://localhost:8000/collection/info
 ```
 
 ## 📝 Usage
 
 ### API Endpoints
 
-**Health Check**
+#### Query & Conversation
 
 ```bash
-curl http://localhost:8000/health
-```
-
-**Ask a Question**
-
-```bash
+# Ask a question with context
 curl -X POST http://localhost:8000/query \
   -H "Content-Type: application/json" \
   -d '{
@@ -81,42 +83,53 @@ curl -X POST http://localhost:8000/query \
     "session_id": "user123",
     "user_os": "Windows"
   }'
-```
 
-**Upload and Index Documents**
-
-```bash
-# Upload single file
-curl -X POST http://localhost:8000/upload \
-  -F "files=@/path/to/document.txt"
-
-# Upload multiple files
-curl -X POST http://localhost:8000/upload \
-  -F "files=@/path/to/doc1.txt" \
-  -F "files=@/path/to/doc2.md" \
-  -F "files=@/path/to/doc3.html"
-```
-
-**Get Conversation History**
-
-```bash
+# Get conversation history
 curl http://localhost:8000/session/user123/history
-```
 
-**Clear Session**
-
-```bash
+# Clear session
 curl -X DELETE http://localhost:8000/session/user123
+
+# Cleanup old sessions (>7 days)
+curl -X POST http://localhost:8000/sessions/cleanup
 ```
 
-### Python Test Script
+#### Document Management
 
 ```bash
-# Install dependencies locally for testing
+# Upload and auto-index documents
+curl -X POST http://localhost:8000/upload \
+  -F "files=@docs/vpn_guide.html" \
+  -F "files=@docs/printer_setup.pdf"
+
+# Manually trigger indexing
+curl -X POST http://localhost:8000/index
+
+# Get collection statistics
+curl http://localhost:8000/collection/info
+
+# Delete specific document
+curl -X DELETE "http://localhost:8000/documents?doc_id=doc123"
+```
+
+### Local Development
+
+```bash
+# Create virtual environment
+python3.13 -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+
+# Install dependencies
 pip install -r requirements.txt
 
-# Run test script
-python test_chatbot.py
+# Download spaCy model
+python -m spacy download en_core_web_sm
+
+# Install Playwright browsers (for status monitoring)
+playwright install
+
+# Run locally (without Docker)
+uvicorn main:app --reload --port 8000
 ```
 
 ## 🎯 How It Works
@@ -131,7 +144,8 @@ python test_chatbot.py
    - `clarify`: Ask for more details
    - `search_kb`: Search again with refined query
    - `troubleshoot`: Start guided workflow
-   - `create_ticket`: Create Jira ticket (not yet implemented)
+   - `create_ticket`: Create Jira ticket with full context
+   - `search_tickets`: Search for existing related tickets (not implemented)
 5. **Generate Answer**: Uses Groq LLM with RAG context
 6. **Format Response**: Prepares final response for user
 
@@ -145,16 +159,19 @@ python test_chatbot.py
 ## 🧪 Testing
 
 ```bash
+# Run all tests
+pytest tests/ -v
+
+# Run specific test files
+pytest tests/test_batch_node.py -v
+pytest tests/test_async_flow.py -v
+
 # Test individual utilities
 python utils/call_llm.py          # Test LLM (OpenAI/Azure/Groq)
 python utils/embedding_local.py
 python utils/chromadb_client.py
-
-# Test full pipeline
-python test_chatbot.py
-
-# Run unit tests (future)
-pytest tests/
+python utils/intent_classifier.py
+python utils/redactor.py
 ```
 
 ## 📊 Monitoring
@@ -204,8 +221,6 @@ The system includes comprehensive workflow observability using [Langfuse](https:
    - Track errors and retries
    - Analyze data transformations
 
-For more details, see [tracing/README.md](tracing/README.md).
-
 ## CI/CD
 
 This project uses GitHub Actions for continuous integration and deployment:
@@ -217,9 +232,10 @@ This project uses GitHub Actions for continuous integration and deployment:
 
 ## 🔒 Security
 
-- ✅ Local embeddings (no document content sent to external APIs)
-- ✅ Sensitive data redaction (passwords, emails, API keys)
-- ✅ Environment-based secrets management
-- ✅ CORS restrictions
-- ✅ Automated vulnerability scanning in CI
-- ⚠️ Add authentication/authorization for production use
+- ✅ **Local embeddings**: Document content never sent to external APIs
+- ✅ **Sensitive data redaction**: Automatic removal of passwords, emails, API keys, tokens
+- ✅ **Environment-based secrets**: API keys stored in `.env` (not in code)
+- ✅ **CORS restrictions**: Configurable allowed origins
+- ✅ **Input validation**: Pydantic models for all API requests
+- ✅ **Dependency scanning**: Automated vulnerability checks in CI
+- ✅ **Minimal attack surface**: CPU-only PyTorch, locked dependencies
