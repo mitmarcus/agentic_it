@@ -420,24 +420,15 @@ class SearchKnowledgeBaseNode(Node):
             logger.debug(f"All results below threshold {min_score * 0.7}")
             return []
         
-        # Step 3: Rerank using cross-encoder (the most impactful step)
-        if _FEATURE_FLAGS["rerank"] and query_text and len(filtered_results) > 1:
-            logger.debug(f"Reranking {len(filtered_results)} candidates...")
-            filtered_results = rerank_results(query_text, filtered_results, top_k=top_k)
-            logger.debug(f"Reranked to top {len(filtered_results)} results")
-        else:
-            # No reranking - just take top_k by vector score
-            filtered_results = filtered_results[:top_k]
-        
-        # Step 4: Smart neighbor retrieval for high-scoring chunks
-        # If top result has high score, fetch neighboring chunks for complete context
-        # This helps with step-by-step instructions split across chunks
+        # Step 3: Smart neighbor retrieval for high-scoring chunks
+        # IMPORTANT: Do this BEFORE reranking so neighbors get reranked too!
+        # This ensures all chunks have consistent score fields (rerank_score)
         if filtered_results and len(filtered_results) > 0:
-            top_score = filtered_results[0].get("rerank_score", filtered_results[0].get("score", 0))
+            top_result = max(filtered_results, key=lambda x: x.get("score", 0))
+            top_score = top_result.get("score", 0)
             
             # Only fetch neighbors if top result is highly relevant (>0.75)
             if top_score > 0.75:
-                top_result = filtered_results[0]
                 source_file = top_result["metadata"].get("source_file")
                 chunk_index = top_result["metadata"].get("chunk_index")
                 
@@ -452,6 +443,16 @@ class SearchKnowledgeBaseNode(Node):
                     if new_neighbors:
                         logger.debug(f"Added {len(new_neighbors)} neighbor chunks for complete context")
                         filtered_results.extend(new_neighbors)
+        
+        # Step 4: Rerank using cross-encoder (the most impactful step)
+        # Now ALL chunks (including neighbors) get reranked together
+        if _FEATURE_FLAGS["rerank"] and query_text and len(filtered_results) > 1:
+            logger.debug(f"Reranking {len(filtered_results)} candidates (including neighbors)...")
+            filtered_results = rerank_results(query_text, filtered_results, top_k=top_k)
+            logger.debug(f"Reranked to top {len(filtered_results)} results")
+        else:
+            # No reranking - just take top_k by vector score
+            filtered_results = filtered_results[:top_k]
         
         # Apply feedback adjustments (boost/penalize based on user feedback)
         score_key = "rerank_score" if filtered_results and "rerank_score" in filtered_results[0] else "score"

@@ -562,10 +562,13 @@ All nodes follow the pattern: **Read in `prep()` → Process in `exec()` → Wri
     - Return as dict
   - **exec**:
     - **Step 1 - Vector Search**: Query ChromaDB with embedding, fetch `top_k * 3` candidates (e.g., 15 results)
-    - Filter by minimum score threshold (configurable via `RAG_MIN_SCORE`)
-    - **Step 2 - Reranking**: Use cross-encoder to rerank candidates based on query-document relevance
-    - **Step 3 - Neighbor Expansion**: For top result, fetch adjacent chunks for context continuity
-    - **Step 4 - Feedback Adjustment**: Apply user feedback scores to boost/penalize documents
+    - **Step 2 - Light Filtering**: Remove very low scores (threshold: `min_score * 0.7`)
+    - **Step 3 - Neighbor Expansion**: For top result (if score > 0.75), fetch adjacent chunks for context continuity
+      - ⚠️ **IMPORTANT**: Neighbors are added BEFORE reranking to ensure all chunks get reranked together
+      - This prevents neighbors from missing `rerank_score` field and getting buried by feedback adjustments
+    - **Step 4 - Reranking**: Use cross-encoder to rerank ALL candidates (including neighbors) based on query-document relevance
+      - All chunks now have consistent `rerank_score` field
+    - **Step 5 - Feedback Adjustment**: Apply user feedback scores to boost/penalize documents, then re-sort
     - Return final top-k documents with scores and metadata
   - **post**:
     - Write `shared["retrieved_docs"]` (list of dicts with content, metadata, scores)
@@ -1525,7 +1528,7 @@ steps:
 
 ---
 
-**Version**: 1.7
+**Version**: 1.8
 **Last Updated**: Dec 8, 2025
 **Author**: Marcus Mitelea
 ```
