@@ -260,28 +260,28 @@ def _trace_flow_class(flow_class, config, flow_name, session_id, user_id):
         original_exec_async = getattr(node, "exec_async", None)
         original_post_async = getattr(node, "post_async", None)
 
-        # Create traced versions
-        if original_prep:
+        # Create traced versions (respecting config flags)
+        if original_prep and self._tracer.config.trace_prep:
             node.prep = self._create_traced_method(
                 original_prep, node_id, node_name, "prep"
             )
-        if original_exec:
+        if original_exec and self._tracer.config.trace_exec:
             node.exec = self._create_traced_method(
                 original_exec, node_id, node_name, "exec"
             )
-        if original_post:
+        if original_post and self._tracer.config.trace_post:
             node.post = self._create_traced_method(
                 original_post, node_id, node_name, "post"
             )
-        if original_prep_async:
+        if original_prep_async and self._tracer.config.trace_prep:
             node.prep_async = self._create_traced_async_method(
                 original_prep_async, node_id, node_name, "prep"
             )
-        if original_exec_async:
+        if original_exec_async and self._tracer.config.trace_exec:
             node.exec_async = self._create_traced_async_method(
                 original_exec_async, node_id, node_name, "exec"
             )
-        if original_post_async:
+        if original_post_async and self._tracer.config.trace_post:
             node.post_async = self._create_traced_async_method(
                 original_post_async, node_id, node_name, "post"
             )
