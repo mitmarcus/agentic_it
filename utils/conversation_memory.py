@@ -194,18 +194,19 @@ class ConversationMemory:
         """
         from datetime import datetime, timedelta
         
-        cutoff = datetime.now() - timedelta(hours=max_age_hours)
-        to_remove = []
-        
-        for session_id, session_data in self._sessions.items():
-            last_activity = datetime.fromisoformat(session_data["last_activity"])
-            if last_activity < cutoff:
-                to_remove.append(session_id)
-        
-        for session_id in to_remove:
-            del self._sessions[session_id]
-        
-        return len(to_remove)
+        with self._lock:
+            cutoff = datetime.now() - timedelta(hours=max_age_hours)
+            to_remove = []
+            
+            for session_id, session_data in self._sessions.items():
+                last_activity = datetime.fromisoformat(session_data["last_activity"])
+                if last_activity < cutoff:
+                    to_remove.append(session_id)
+            
+            for session_id in to_remove:
+                del self._sessions[session_id]
+            
+            return len(to_remove)
     
     def get_formatted_history(self, session_id: str, limit: int = 10, exclude_last: bool = False) -> str:
         """
