@@ -6,6 +6,7 @@ torch==2.9.0+cpu
 
 # LLM providers
 groq==0.32.0
+openai==1.58.1  # for OpenAI and Azure OpenAI support
 
 # Vector database and embeddings
 chromadb==1.3.4

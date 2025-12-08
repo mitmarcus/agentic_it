@@ -146,7 +146,7 @@ python test_chatbot.py
 
 ```bash
 # Test individual utilities
-python utils/call_llm_groq.py
+python utils/call_llm.py          # Test LLM (OpenAI/Azure/Groq)
 python utils/embedding_local.py
 python utils/chromadb_client.py
 
