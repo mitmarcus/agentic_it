@@ -134,7 +134,7 @@ def get_decision_rules(doc_threshold: float, context: dict) -> str:
 
 ### EXAMPLES OF CORRECT BEHAVIOR
 - User confirms "yes" after clarification + docs available → **answer** with the solution
-- User asks "who to contact about router?" + You have docs about router contacts (score 0.72) → **answer** with contact info
+- User asks "who to contact about router?" + You have docs about router contacts → **answer** with contact info
 - User asks "router" (vague) + No good docs → **clarify** what they need
 - User asks clear question + No docs found → **search_kb** OR **answer** saying you don't have that info"""
 
