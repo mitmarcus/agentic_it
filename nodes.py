@@ -483,7 +483,17 @@ class SearchKnowledgeBaseNode(Node):
                 chunks.sort(key=lambda c: c['metadata'].get('chunk_index', 0))
                 
                 # Find the highest scoring chunk in this group
-                best_score = max(c.get('rerank_score', c.get('rrf_score', c.get('score', 0))) for c in chunks)
+                # Prefer rerank > rrf > vector score, but handle 0 scores properly
+                def get_best_score(chunk):
+                    rerank = chunk.get('rerank_score', 0)
+                    if rerank > 0:
+                        return rerank
+                    rrf = chunk.get('rrf_score')
+                    if rrf is not None:
+                        return rrf
+                    return chunk.get('score', 0)
+                
+                best_score = max(get_best_score(c) for c in chunks)
                 
                 # Add all chunks with their group score for sorting
                 for chunk in chunks:
@@ -529,6 +539,7 @@ class SearchKnowledgeBaseNode(Node):
             unique_sources = len(set(d['metadata'].get('source_file', 'unknown') for d in unique_docs))
             neighbor_count = sum(1 for d in unique_docs if d.get('is_neighbor', False))
             logger.debug(f"Compiled context: {unique_sources} sources, {len(unique_docs)} chunks ({neighbor_count} neighbors)")
+            
             return "docs_found"
         else:
             shared["rag_context"] = ""
