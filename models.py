@@ -4,7 +4,7 @@ Pydantic models for request/response validation.
 This module contains all the data models used by the FastAPI endpoints.
 """
 from typing import Dict, List, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 # ============================================================================
@@ -17,6 +17,30 @@ class QueryRequest(BaseModel):
     session_id: Optional[str] = Field(None, description="Optional session ID for conversation continuity", max_length=100)
     user_id: Optional[str] = Field(None, description="Optional user identifier", max_length=100)
     user_os: Optional[str] = Field(None, description="User's operating system (Windows, macOS, Linux, etc.)", max_length=100)
+    
+    @field_validator('query')
+    @classmethod
+    def query_not_empty(cls, v: str) -> str:
+        """
+        Validate that query is not empty or whitespace-only.
+        
+        This prevents:
+        - Whitespace-only queries from wasting LLM resources
+        - Empty queries that pass min_length=1 check
+        - Unnecessary RAG retrieval and token costs
+        
+        Args:
+            v: The query string value
+            
+        Returns:
+            Trimmed query string
+            
+        Raises:
+            ValueError: If query is empty or whitespace-only
+        """
+        if not v or not v.strip():
+            raise ValueError("Please enter a question or describe your IT issue")
+        return v.strip()  # Return trimmed version to normalize input
 
     model_config = {
         "json_schema_extra": {

@@ -13,8 +13,10 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.exceptions import RequestValidationError
 from dotenv import load_dotenv
 from typing import List
+from json import JSONDecodeError
 
 # Import flows
 from flows import get_flow
@@ -22,7 +24,11 @@ from utils.conversation_memory import conversation_memory
 from utils.logger import setup_logging, get_logger
 
 # Import core utilities
-from core.error_handling import handle_api_errors
+from core.error_handling import (
+    handle_api_errors,
+    validation_exception_handler,
+    json_decode_exception_handler
+)
 
 # Import models
 from models import (
@@ -104,6 +110,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Register custom exception handlers
+# These prevent exposure of internal implementation details in error responses
+app.add_exception_handler(RequestValidationError, validation_exception_handler)
+app.add_exception_handler(JSONDecodeError, json_decode_exception_handler)
 
 
 # ============================================================================
