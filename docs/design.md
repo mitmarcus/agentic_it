@@ -111,13 +111,14 @@ flowchart TD
         E -->|search_kb| C
         E -->|troubleshoot| H[InteractiveTroubleshootNode]
         E -->|search_tickets| I[NotImplementedNode]
-        E -->|create_ticket| J[NotImplementedNode]
+        E -->|create_ticket| J[TicketCreationNode]
 
         F --> K[FormatFinalResponseNode]
         G --> K
         H --> K
         I --> K
         J --> K
+        H -->|escalate| J
     end
 ```
 
@@ -190,8 +191,15 @@ flowchart LR
 
    - Formats final response and saves to conversation memory
 
-10. **NotImplementedNode**
-    - Placeholder for ticket search and creation (not yet implemented)
+10. **TicketCreationNode**
+
+- Creates Jira support ticket with full conversation context
+- Checks for duplicate tickets to avoid unnecessary escalations
+- Generates LLM-powered ticket summaries and descriptions
+- Auto-closes tickets if issue was resolved during troubleshooting
+
+11. **NotImplementedNode**
+    - Placeholder for ticket search feature (not yet implemented)
 
 #### Offline Indexing Flow:
 
@@ -1517,7 +1525,7 @@ steps:
 
 ---
 
-**Version**: 1.6
-**Last Updated**: Dec 1, 2025
+**Version**: 1.7
+**Last Updated**: Dec 8, 2025
 **Author**: Marcus Mitelea
 ```
