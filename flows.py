@@ -59,6 +59,9 @@ class QueryFlow(Flow):
         clarify_node = AskClarifyingQuestionNode()
         format_node = FormatFinalResponseNode()
         create_ticket_node = TicketCreationNode()
+
+        # Initialize Flow with start node (redact first!)
+        super().__init__(start=redact_node)
         
         # Interactive troubleshooting node
         troubleshoot_node = InteractiveTroubleshootNode()
@@ -92,10 +95,6 @@ class QueryFlow(Flow):
         _ = troubleshoot_node >> format_node  # default: continue
         _ = troubleshoot_node - "exit" >> format_node
         _ = troubleshoot_node - "escalate" >> create_ticket_node
-      
-        
-        # Initialize Flow with start node (redact first!)
-        super().__init__(start=redact_node)
         
         logger.info("Query flow created with tracing")
 
@@ -135,11 +134,11 @@ class IndexingFlow(Flow):
         embed_node = EmbedDocumentsNode()
         store_node = StoreInChromaDBNode()
         
-        # Connect in sequence
-        _ = load_node >> chunk_node >> embed_node >> store_node
-        
         # Initialize Flow with start node
         super().__init__(start=load_node)
+
+        # Connect in sequence
+        _ = load_node >> chunk_node >> embed_node >> store_node
         
         logger.info("Indexing flow created with tracing")
 
@@ -206,6 +205,9 @@ class TestQueryFlow(Flow):
         answer_node = GenerateAnswerNode()
         format_node = FormatFinalResponseNode()
         
+        # Initialize Flow with start node
+        super().__init__(start=redact_node)
+
         # Simple linear flow
         _ = redact_node >> intent_node >> embed_node >> query_node >> search_node
         
@@ -214,9 +216,6 @@ class TestQueryFlow(Flow):
         _ = search_node - "no_docs" >> answer_node
         
         _ = answer_node >> format_node
-        
-        # Initialize Flow with start node
-        super().__init__(start=redact_node)
         
         logger.info("Test query flow created with tracing")
 
@@ -237,7 +236,6 @@ def create_test_query_flow() -> Flow:
 # ============================================================================
 
 _flow_cache: dict = {}
-
 
 @overload
 def get_flow(flow_type: Literal["status"]) -> AsyncFlow: ...

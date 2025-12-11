@@ -125,8 +125,8 @@ def handle_api_errors(operation_name: str):
 # ============================================================================
 
 async def validation_exception_handler(
-    request: Union[Request, StarletteRequest, Any], 
-    exc: RequestValidationError
+    request: Request, 
+    exc: Exception
 ) -> JSONResponse:
     """
     Custom handler for Pydantic validation errors.
@@ -165,6 +165,16 @@ async def validation_exception_handler(
     Returns:
         JSONResponse with generic error message
     """
+    # Type check - ensure this is actually a RequestValidationError
+    if not isinstance(exc, RequestValidationError):
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={
+                "error": "Invalid request",
+                "message": "Please check your input and try again."
+            }
+        )
+    
     # Log the actual error for debugging (internal use only)
     logger.warning(
         f"Validation error on {request.url.path}: {exc.errors()}",
@@ -230,7 +240,7 @@ async def validation_exception_handler(
 
 
 async def json_decode_exception_handler(
-    request: Union[Request, StarletteRequest, Any], 
+    request: Request, 
     exc: Exception
 ) -> JSONResponse:
     """

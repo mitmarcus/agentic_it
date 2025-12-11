@@ -29,7 +29,6 @@ def _get_azure_client():
         
         api_key = os.getenv("AZURE_OPENAI_API_KEY")
         endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
-        api_version = os.getenv("AZURE_OPENAI_API_VERSION", "2024-12-01-preview")
         
         if not api_key:
             raise ValueError("AZURE_OPENAI_API_KEY environment variable not set")
@@ -38,8 +37,7 @@ def _get_azure_client():
         
         _AZURE_CLIENT = AzureOpenAI(
             api_key=api_key,
-            azure_endpoint=endpoint,
-            api_version=api_version
+            azure_endpoint=endpoint
         )
     return _AZURE_CLIENT
 
@@ -68,7 +66,6 @@ def call_llm(
         AZURE_OPENAI_API_KEY: Your Azure OpenAI API key
         AZURE_OPENAI_ENDPOINT: Azure endpoint URL
         AZURE_OPENAI_DEPLOYMENT: Deployment/model name
-        AZURE_OPENAI_API_VERSION: API version (default: "2024-12-01-preview")
         LLM_TEMPERATURE: Default temperature (default: 0.2)
     """
     deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT")
