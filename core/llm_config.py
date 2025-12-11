@@ -14,19 +14,30 @@ class LLMConfig:
     """Centralized LLM configuration."""
     
     # Token limits (from env: LLM_MAX_TOKENS)
-    max_tokens: int = 1024
+    max_tokens: int
     
     # Retry configuration (from env: LLM_MAX_RETRIES, LLM_RETRY_WAIT)
-    max_retries: int = 3
-    retry_wait: int = 2
+    max_retries: int
+    retry_wait: int
     
     @classmethod
     def from_env(cls) -> "LLMConfig":
-        """Load configuration from environment variables with fallbacks."""
+        """Load configuration from environment variables."""
+        max_tokens_str = os.getenv("LLM_MAX_TOKENS")
+        max_retries_str = os.getenv("LLM_MAX_RETRIES")
+        retry_wait_str = os.getenv("LLM_RETRY_WAIT")
+        
+        if not max_tokens_str:
+            raise ValueError("LLM_MAX_TOKENS environment variable is required")
+        if not max_retries_str:
+            raise ValueError("LLM_MAX_RETRIES environment variable is required")
+        if not retry_wait_str:
+            raise ValueError("LLM_RETRY_WAIT environment variable is required")
+        
         return cls(
-            max_tokens=int(os.getenv("LLM_MAX_TOKENS", "1024")),
-            max_retries=int(os.getenv("LLM_MAX_RETRIES", "3")),
-            retry_wait=int(os.getenv("LLM_RETRY_WAIT", "2")),
+            max_tokens=int(max_tokens_str),
+            max_retries=int(max_retries_str),
+            retry_wait=int(retry_wait_str),
         )
 
 
