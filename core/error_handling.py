@@ -126,7 +126,7 @@ def handle_api_errors(operation_name: str):
 
 async def validation_exception_handler(
     request: Union[Request, StarletteRequest, Any], 
-    exc: Union[RequestValidationError, Exception]
+    exc: RequestValidationError
 ) -> JSONResponse:
     """
     Custom handler for Pydantic validation errors.
