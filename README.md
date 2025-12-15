@@ -47,10 +47,10 @@ cp .env.sample .env
 
 ```bash
 # Build and start all services (ChromaDB + Chatbot + Frontend)
-docker-compose up -d --build
+docker compose up -d --build
 
 # View logs
-docker-compose logs -f chatbot
+docker compose logs -f chatbot
 
 # Check health
 curl http://localhost:8000/health
@@ -167,7 +167,7 @@ pytest tests/test_batch_node.py -v
 pytest tests/test_async_flow.py -v
 
 # Test individual utilities
-python utils/call_llm.py          # Test LLM (OpenAI/Azure/Groq)
+python utils/call_llm.py          # Test LLM (Azure/Groq)
 python utils/embedding_local.py
 python utils/chromadb_client.py
 python utils/intent_classifier.py
@@ -183,8 +183,8 @@ View logs:
 tail -f logs/app.log
 
 # Docker logs
-docker-compose logs -f chatbot
-docker-compose logs -f chromadb
+docker compose logs -f chatbot
+docker compose logs -f chromadb
 ```
 
 ### 🔍 Workflow Tracing with Langfuse
