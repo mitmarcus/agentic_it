@@ -13,6 +13,7 @@ In production, this could be stored in a database or analytics system.
 
 import os
 import json
+import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Any

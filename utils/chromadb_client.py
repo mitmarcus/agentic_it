@@ -266,16 +266,16 @@ def get_neighbor_chunks(
     
     # Filter and format neighbors
     neighbors = []
-    ids = results.get("ids", [])
-    documents = results.get("documents", [])
-    metadatas = results.get("metadatas", [])
+    ids = results.get("ids", []) or []
+    documents = results.get("documents", []) or []
+    metadatas = results.get("metadatas", []) or []
     
     for i in range(len(ids)):
         metadata = metadatas[i] if i < len(metadatas) else {}
         current_index = metadata.get("chunk_index", -1)
         
-        # Include if in neighbor range
-        if min_index <= current_index <= max_index:
+        # Include if in neighbor range (ensure current_index is int)
+        if isinstance(current_index, int) and min_index <= current_index <= max_index:
             neighbors.append({
                 "id": ids[i],
                 "document": documents[i] if i < len(documents) else "",

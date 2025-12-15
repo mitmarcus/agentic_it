@@ -139,8 +139,9 @@ class HTMLParser:
     
     def get_title(self) -> str:
         soup = BeautifulSoup(self.html_source, 'html.parser')
-        title = soup.find('title')
-        title = re.sub(r"^Public\s*:\s*", "", title.get_text(strip=True))
+        title_tag = soup.find('title')
+        title = title_tag.get_text(strip=True) if title_tag else "Untitled"
+        title = re.sub(r"^Public\s*:\s*", "", title)
         title = re.sub(r'[\\/*?:"<>|]', "_", title) # sanitize for file names
         return title
 

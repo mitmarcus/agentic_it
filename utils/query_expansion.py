@@ -14,6 +14,7 @@ Example:
 
 import os
 import yaml
+import logging
 from typing import List, Optional
 from utils.logger import get_logger
 
@@ -104,7 +105,7 @@ Just the queries, nothing else."""
 
 def expand_query_with_keywords(
     query: str,
-    keywords: List[str] = None,
+    keywords: Optional[List[str]] = None,
     call_llm_func = None
 ) -> str:
     """
