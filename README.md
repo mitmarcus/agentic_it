@@ -47,10 +47,10 @@ cp .env.sample .env
 
 ```bash
 # Build and start all services (ChromaDB + Chatbot + Frontend)
-docker-compose up -d --build
+docker compose up -d --build
 
 # View logs
-docker-compose logs -f chatbot
+docker compose logs -f chatbot
 
 # Check health
 curl http://localhost:8000/health
@@ -183,8 +183,8 @@ View logs:
 tail -f logs/app.log
 
 # Docker logs
-docker-compose logs -f chatbot
-docker-compose logs -f chromadb
+docker compose logs -f chatbot
+docker compose logs -f chromadb
 ```
 
 ### 🔍 Workflow Tracing with Langfuse
