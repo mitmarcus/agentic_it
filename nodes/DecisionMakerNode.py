@@ -38,12 +38,6 @@ class DecisionMakerNode(Node):
         doc_count = len(retrieved_docs)
         doc_scores = [doc['score'] for doc in retrieved_docs] if retrieved_docs else []
         
-        # Get workflow state
-        workflow_state = shared.get("workflow_state")
-        workflow_status = "None"
-        if workflow_state:
-            workflow_status = f"In progress: step {workflow_state.get('current_step_index', 0) + 1}"
-        
         # Track search attempts to prevent infinite loops
         search_count = shared.get("search_count", 0)
         max_searches = _get_int_env("AGENT_MAX_TURNS")
@@ -61,7 +55,6 @@ class DecisionMakerNode(Node):
             "rag_context": rag_context,
             "doc_count": doc_count,
             "doc_scores": doc_scores,
-            "workflow_status": workflow_status,
             "turn_count": shared.get("turn_count", 0),
             "search_count": search_count,
             "max_searches": max_searches,
@@ -89,9 +82,7 @@ Network Status:
 {context['network_status']}
 
 Conversation History (look at the last few messages):
-{context['conversation_history'] if context['conversation_history'] else 'No previous conversation'}
-
-Current Workflow State: {context['workflow_status']}"""
+{context['conversation_history'] if context['conversation_history'] else 'No previous conversation'}"""
         
         # Debug: Log the prompt to see what decision maker sees
         logger.debug(f"Decision maker prompt (first 500 chars): {prompt[:500]}...")
