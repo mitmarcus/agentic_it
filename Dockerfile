@@ -32,7 +32,7 @@ COPY utils/ ./utils/
 COPY core/ ./core/
 COPY cremedelacreme/ ./cremedelacreme/
 COPY langfuse_tracing/ ./langfuse_tracing/
-COPY nodes.py .
+COPY nodes/ ./nodes/
 COPY flows.py .
 COPY models.py .
 COPY main.py .
