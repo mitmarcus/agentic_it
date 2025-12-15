@@ -1,6 +1,6 @@
 """
 Session-based conversation memory for interactive workflows.
-Stores workflow state, conversation history, and step tracking.
+Stores conversation history, active topic tracking, and session state.
 """
 import threading
 from typing import Dict, Any, List, Optional
@@ -11,7 +11,7 @@ from collections import OrderedDict
 class ConversationMemory:
     """
     In-memory store for conversation sessions.
-    Tracks workflow state, conversation history, and active topic.
+    Tracks conversation history and active topic.
     
     Uses OrderedDict with LRU eviction to bound memory usage.
     """
@@ -47,7 +47,6 @@ class ConversationMemory:
                     "created_at": datetime.now().isoformat(),
                     "last_activity": datetime.now().isoformat(),
                     "conversation_history": [],
-                    "workflow_state": None,
                     "active_topic": None,  # Track the current topic being discussed
                 }
             else:
@@ -122,58 +121,6 @@ class ConversationMemory:
         """
         session = self.get_session(session_id)
         return session["conversation_history"][-limit:]
-    
-    def set_workflow_state(self, session_id: str, workflow_state: Dict[str, Any]):
-        """
-        Store workflow state for interactive troubleshooting.
-        
-        Args:
-            session_id: Session identifier
-            workflow_state: Workflow state dictionary with:
-                - issue: Original issue description
-                - all_steps: List of all troubleshooting steps
-                - current_step_index: Current step number
-                - completed_steps: List of completed step indices
-                - status: 'in_progress', 'resolved', 'escalated'
-        """
-        session = self.get_session(session_id)
-        session["workflow_state"] = workflow_state
-    
-    def get_workflow_state(self, session_id: str) -> Optional[Dict[str, Any]]:
-        """
-        Get current workflow state.
-        
-        Args:
-            session_id: Session identifier
-        
-        Returns:
-            Workflow state dictionary or None
-        """
-        session = self.get_session(session_id)
-        return session.get("workflow_state")
-    
-    def clear_workflow_state(self, session_id: str):
-        """
-        Clear workflow state (issue resolved or abandoned).
-        
-        Args:
-            session_id: Session identifier
-        """
-        session = self.get_session(session_id)
-        session["workflow_state"] = None
-    
-    def is_in_workflow(self, session_id: str) -> bool:
-        """
-        Check if session is currently in an interactive workflow.
-        
-        Args:
-            session_id: Session identifier
-        
-        Returns:
-            True if in workflow, False otherwise
-        """
-        workflow_state = self.get_workflow_state(session_id)
-        return workflow_state is not None and workflow_state.get("status") == "in_progress"
     
     def clear_session(self, session_id: str):
         """
@@ -250,23 +197,4 @@ if __name__ == "__main__":
     # Get history
     history = memory.get_conversation_history(session_id)
     print(f"Conversation history: {len(history)} messages")
-    
-    # Set workflow state
-    workflow = {
-        "issue": "Computer won't turn on",
-        "all_steps": [
-            {"step": 1, "action": "Check power cable"},
-            {"step": 2, "action": "Try different outlet"},
-        ],
-        "current_step_index": 0,
-        "completed_steps": [],
-        "status": "in_progress"
-    }
-    memory.set_workflow_state(session_id, workflow)
-    
-    # Check workflow
-    print(f"In workflow: {memory.is_in_workflow(session_id)}")
-    
-    # Get workflow
-    state = memory.get_workflow_state(session_id)
-    print(f"Workflow state: {state}")
+    print(f"History: {history}")
