@@ -1,5 +1,5 @@
 """
-Unified LLM API wrapper supporting OpenAI, Azure OpenAI, and Groq.
+Unified LLM API wrapper supporting Azure OpenAI, and Groq.
 Switch providers using LLM_PROVIDER environment variable.
 """
 import os
@@ -16,25 +16,8 @@ def _get_logger():
     return _logger
 
 # Cached client instances
-_OPENAI_CLIENT = None
 _AZURE_CLIENT = None
 _GROQ_CLIENT = None
-
-
-def _get_openai_client():
-    """Get or create cached OpenAI client."""
-    global _OPENAI_CLIENT
-    if _OPENAI_CLIENT is None:
-        try:
-            from openai import OpenAI
-        except ImportError:
-            raise ImportError("openai package not installed. Install with: pip install openai")
-        
-        api_key = os.getenv("OPENAI_API_KEY")
-        if not api_key:
-            raise ValueError("OPENAI_API_KEY environment variable not set")
-        _OPENAI_CLIENT = OpenAI(api_key=api_key)
-    return _OPENAI_CLIENT
 
 
 def _get_azure_client():
@@ -92,7 +75,7 @@ def call_llm(
         prompt: Text prompt for the LLM
         max_tokens: Maximum tokens in response (default: 1024)
         temperature: Temperature for sampling (default: from LLM_TEMPERATURE env var or 0.2)
-        provider: Override provider ("openai", "azure", or "groq"). 
+        provider: Override provider ("azure", or "groq"). 
                  If None, uses LLM_PROVIDER env var (default: "groq")
     
     Returns:
@@ -103,12 +86,8 @@ def call_llm(
         Exception: If API call fails (propagates to Node for retry handling)
         
     Environment Variables:
-        LLM_PROVIDER: "openai", "azure", or "groq" (default: "groq")
+        LLM_PROVIDER: "azure", or "groq" (default: "groq")
         LLM_TEMPERATURE: Default temperature (default: 0.2)
-        
-        For OpenAI:
-            OPENAI_API_KEY: Your OpenAI API key
-            OPENAI_MODEL: Model name (default: "gpt-4o")
             
         For Azure OpenAI:
             AZURE_OPENAI_API_KEY: Your Azure OpenAI API key
@@ -133,40 +112,18 @@ def call_llm(
     _get_logger().info(f"Calling LLM with provider: {provider}")
     
     try:
-        if provider == "openai":
-            return _call_openai(prompt, max_tokens, temperature)
-        elif provider == "azure":
+        if provider == "azure":
             return _call_azure(prompt, max_tokens, temperature)
         elif provider == "groq":
             return _call_groq(prompt, max_tokens, temperature)
         else:
             raise ValueError(
                 f"Unknown LLM provider: {provider}. "
-                f"Must be 'openai', 'azure', or 'groq'"
+                f"Must be 'azure', or 'groq'"
             )
     except Exception as e:
         _get_logger().error(f"LLM call failed with provider {provider}: {e}")
         raise
-
-
-def _call_openai(prompt: str, max_tokens: int, temperature: float) -> str:
-    """Call OpenAI API."""
-    model = os.getenv("OPENAI_MODEL", "gpt-4o")
-    client = _get_openai_client()
-    
-    response = client.chat.completions.create(
-        model=model,
-        messages=[{"role": "user", "content": prompt}],
-        temperature=temperature,
-        max_tokens=max_tokens,
-    )
-    
-    result = response.choices[0].message.content
-    if not result:
-        raise ValueError("Empty response from OpenAI API")
-    
-    return result
-
 
 def _call_azure(prompt: str, max_tokens: int, temperature: float) -> str:
     """Call Azure OpenAI API."""

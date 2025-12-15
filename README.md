@@ -167,7 +167,7 @@ pytest tests/test_batch_node.py -v
 pytest tests/test_async_flow.py -v
 
 # Test individual utilities
-python utils/call_llm.py          # Test LLM (OpenAI/Azure/Groq)
+python utils/call_llm.py          # Test LLM (Azure/Groq)
 python utils/embedding_local.py
 python utils/chromadb_client.py
 python utils/intent_classifier.py
