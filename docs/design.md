@@ -223,13 +223,13 @@ LoadDocumentsNode → ChunkDocumentsNode → EmbedDocumentsNode → StoreInChrom
 
 ### Implemented Utilities
 
-1. **Call LLM** (`utils/call_llm_groq.py`)
+1. **Call LLM** (`utils/call_llm.py`)
 
    - **Input**: `prompt: str`, `max_tokens: int = 1024`
    - **Output**: `response: str`
    - **Necessity**: Used by most nodes for LLM-based tasks (answer generation, decision making)
-   - **Implementation**: Uses Groq API with configurable model
-   - **Environment Variables**: `GROQ_API_KEY`, `GROQ_MODEL`
+   - **Implementation**: Unified LLM wrapper supporting multiple providers (Azure OpenAI, Groq, etc.)
+   - **Environment Variables**: `LLM_PROVIDER`, `LLM_MODEL`, provider-specific API keys
 
 2. **Get Embedding** (`utils/embedding_local.py`)
 
@@ -585,7 +585,7 @@ All nodes follow the pattern: **Read in `prep()` → Process in `exec()` → Wri
 - **Type**: Regular Node (Agent pattern)
 - **Max Retries**: 2
 - **Wait**: 1 second (rate limiting on LLM API)
-- **Utility Used**: `utils/call_llm_groq.py` - `call_llm()`, `utils/prompts.py` - decision prompts
+- **Utility Used**: `utils/call_llm.py` - `call_llm()`, `utils/prompts.py` - decision prompts
 - **Steps**:
   - **prep**:
     - Read comprehensive context:
@@ -634,7 +634,7 @@ All nodes follow the pattern: **Read in `prep()` → Process in `exec()` → Wri
 - **Type**: Regular Node
 - **Max Retries**: 2
 - **Wait**: 1 second
-- **Utility Used**: `utils/call_llm_groq.py` - `call_llm()`
+- **Utility Used**: `utils/call_llm.py` - `call_llm()`
 - **Steps**:
   - **prep**:
     - Read `shared["user_query"]`, `shared["user_os"]`
@@ -671,7 +671,7 @@ All nodes follow the pattern: **Read in `prep()` → Process in `exec()` → Wri
 - **Type**: Regular Node
 - **Max Retries**: 2
 - **Wait**: 1 second
-- **Utility Used**: `utils/call_llm_groq.py` - `call_llm()`
+- **Utility Used**: `utils/call_llm.py` - `call_llm()`
 - **Steps**:
   - **prep**:
     - Read `shared["user_query"]`, `shared["intent"]`
@@ -704,7 +704,7 @@ All nodes follow the pattern: **Read in `prep()` → Process in `exec()` → Wri
 - **Type**: Regular Node
 - **Max Retries**: 2
 - **Wait**: 1 second
-- **Utility Used**: `utils/call_llm_groq.py` - `call_llm()`, `utils/conversation_memory.py` - workflow state
+- **Utility Used**: `utils/call_llm.py` - `call_llm()`
 - **Steps**:
   - **prep**:
     - Read `shared["user_query"]`, `shared["user_os"]`
@@ -1288,74 +1288,24 @@ services:
 
 ---
 
-## Appendix A: File Structure
-
-```
-agentic_it/
-├── main.py                          # FastAPI entry point (endpoints, lifespan)
-├── nodes.py                         # All node definitions (14 nodes)
-├── flows.py                         # Flow orchestration (4 flows)
-├── models.py                        # Pydantic request/response models
-├── requirements.txt                 # Python dependencies
-├── Dockerfile                       # Container image definition
-├── docker-compose.yml               # Multi-container orchestration
-├── cremedelacreme/                  # Node/Flow framework
-│   ├── __init__.py                 # Core abstractions
-│   └── __init__.pyi                # Type stubs
-├── langfuse_tracing/               # Tracing utilities
-│   ├── __init__.py
-│   ├── core.py                     # Core tracing logic
-│   ├── decorator.py                # @trace_flow decorator
-│   └── config.py                   # Langfuse configuration
-├── docs/
-│   └── design.md                   # This document
-├── utils/
-│   ├── call_llm_groq.py           # LLM wrapper (Groq)
-│   ├── embedding_local.py         # Local embedding generation
-│   ├── intent_classifier.py       # Rule-based intent classification
-│   ├── conversation_memory.py     # Session management
-│   ├── chromadb_client.py         # Vector DB interface
-│   ├── chunker.py                 # Semantic document chunking
-│   ├── redactor.py                # Sensitive data removal
-│   ├── document_parser.py         # PDF/HTML parsing
-│   └── status_retrieval.py        # Status page scraping
-├── data/
-│   ├── docs/                       # IT documentation (HTML from Confluence)
-│   └── uploads/                    # Uploaded documents
-├── logs/
-│   └── chatbot_*.log              # Application logs
-├── tests/
-│   ├── test_batch_node.py         # BatchNode tests
-│   ├── test_async_flow.py         # AsyncFlow tests
-│   ├── test_flow_basic.py         # Basic flow tests
-│   └── test_tracing.py            # Langfuse tracing tests
-├── frontend/                       # Next.js chat UI
-│   ├── app/
-│   └── package.json
-└── chroma_data/                    # ChromaDB persistent storage
-```
-
----
-
-## Appendix B: Example Interactions
+## Appendix A: Example Interactions
 
 ### Example 1: Factual Query
 
 ```
+
 User: What is our VPN connection procedure?
 Flow: [RedactInput] → [IntentClassify] → [EmbedQuery] → [SearchKB] → [DecisionMaker: answer] → [GenerateAnswer]
-Bot: To connect to the VPN:
-     1. Open Cisco AnyConnect
-     2. Enter vpn.company.com
-     3. Use your AD credentials
-     4. Approve MFA request
+Bot: To connect to the VPN: 1. Open Cisco AnyConnect 2. Enter vpn.company.com 3. Use your AD credentials 4. Approve MFA request
 
      Source: AnyConnect How-to-setup documentation
+
 ```
 
 ### Example 2: Troubleshooting
 
 ```
+
 User: My printer won't print
 Flow: [DecisionMaker: troubleshoot] → [InteractiveTroubleshoot]
 Bot: Let's troubleshoot this together. First, is the printer showing any error lights?
@@ -1365,44 +1315,48 @@ User: Found it, removed the paper
 Bot: Great! Try printing a test page now.
 User: It works!
 Bot: Excellent! Issue resolved.
+
 ```
 
 ### Example 3: Network Status Check
 
 ```
+
 User: Is there an outage?
 Flow: [NetworkStatusFlow] → [StatusQueryNode (async)]
 Bot: Current network status:
-     ⚠️ SharePoint: Degraded performance (investigating)
-     ✅ VPN: Operational
-     ✅ Email: Operational
+⚠️ SharePoint: Degraded performance (investigating)
+✅ VPN: Operational
+✅ Email: Operational
+
 ```
 
 ### Example 4: Clarification Needed
 
 ```
+
 User: It's not working
 Flow: [DecisionMaker: clarify] → [AskClarifyingQuestion]
-Bot: I'd like to help! Could you tell me:
-     - What application or service isn't working?
-     - What error message do you see?
-     - When did this start happening?
+Bot: I'd like to help! Could you tell me: - What application or service isn't working? - What error message do you see? - When did this start happening?
+
 ```
 
 ### Example 5: Sensitive Data Redaction
 
 ```
+
 User: My password abc123 doesn't work for VPN
 Flow: [RedactInput] → ...
 Bot: ⚠️ Note: Sensitive information was removed from your message for security.
 
      Let's help with your VPN login issue. Are you using your Active Directory
      credentials? If so, try resetting your password at password.company.com
+
 ```
 
 ---
 
-## Appendix C: Prompt Templates
+## Appendix B: Prompt Templates
 
 ### Decision Maker Prompt
 
