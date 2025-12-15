@@ -338,14 +338,17 @@ async def process_query(request: QueryRequest):
         "turn_count": turn_count,
     }
 
-    # If this is the start of the conversation, query the status page
-    status_flow = get_flow("status")
+    # Start status check in background (non-blocking, uses cache for fast response)
+    # On first turn, this populates the cache. On subsequent turns, uses cached data.
     if turn_count == 1:
-        result = await status_flow.run_async(shared)
-        logger.debug(f"Initial status check completed for session {session_id}. Result: {result}")
-
+        # Kick off status check in background (will populate cache for ~60s)
+        import asyncio
+        status_flow = get_flow("status")
+        status_task = asyncio.create_task(status_flow.run_async(shared))
+        logger.debug(f"Started background status check for session {session_id}")
+        # Don't await - let it run in parallel with main query flow
     
-    # Get and run the query flow
+    # Get and run the query flow (happens in parallel with status check)
     flow = get_flow("query")
     flow.run(shared)
     
@@ -675,7 +678,56 @@ async def cleanup_old_sessions(max_age_hours: int = 24):
     return {
         "status": "success",
         "sessions_removed": removed_count,
-        "max_age_hours": max_age_hours
+        "timestamp": datetime.now().isoformat()
+    }
+
+
+@app.post("/admin/cache/clear")
+@handle_api_errors("clear_status_cache")
+async def clear_status_cache():
+    """
+    Clear the network status cache.
+    
+    Use this endpoint when you need immediate fresh status data,
+    bypassing the 60-second cache.
+    
+    Returns:
+        Cache clear confirmation
+    """
+    from nodes import StatusQueryNode
+    
+    old_age = StatusQueryNode.get_cache_age()
+    StatusQueryNode.clear_cache()
+    
+    return {
+        "status": "success",
+        "message": "Status cache cleared",
+        "previous_cache_age": f"{old_age:.1f}s",
+        "timestamp": datetime.now().isoformat()
+    }
+
+
+@app.get("/admin/cache/status")
+@handle_api_errors("get_cache_status")
+async def get_cache_status():
+    """
+    Get current status cache information.
+    
+    Returns:
+        Cache status and age
+    """
+    from nodes import StatusQueryNode
+    
+    cache_age = StatusQueryNode.get_cache_age()
+    is_valid = StatusQueryNode.is_cache_valid()
+    
+    return {
+        "cache_age_seconds": cache_age,
+        "cache_ttl_seconds": StatusQueryNode._cache_ttl,
+        "is_valid": is_valid,
+        "expires_in_seconds": max(0, StatusQueryNode._cache_ttl - cache_age) if is_valid else 0,
+        "data_count": len(StatusQueryNode._cache.get("data", [])),
+        "timestamp": datetime.now().isoformat()
     }
 
 

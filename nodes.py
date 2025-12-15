@@ -1566,18 +1566,62 @@ class StoreInChromaDBNode(Node):
 # ============================================================================
 
 class StatusQueryNode(AsyncNode):
-    """Node to check Stibo's status page for network interruptions."""
+    """Node to check Stibo's status page for network interruptions.
+    
+    Features:
+    - Caches results for 600 seconds to avoid redundant API calls
+    - Runs async/parallel with main query flow
+    - Always returns fresh data when cache expires
+    """
+    
+    # Cache storage: {"last_fetch": timestamp, "data": results}
+    _cache = {"last_fetch": 0, "data": []}
+    _cache_ttl = int(os.getenv("STATUS_CACHE_TTL", "600"))  # seconds - configurable via env
+    
+    @classmethod
+    def clear_cache(cls):
+        """Manually clear the status cache. Useful for urgent updates."""
+        cls._cache = {"last_fetch": 0, "data": []}
+        logger.info("Status cache manually cleared")
+    
+    @classmethod
+    def get_cache_age(cls) -> float:
+        """Get current cache age in seconds."""
+        import time
+        return time.time() - cls._cache["last_fetch"]
+    
+    @classmethod
+    def is_cache_valid(cls) -> bool:
+        """Check if cache is still valid (not expired)."""
+        return cls.get_cache_age() < cls._cache_ttl
     
     async def prep_async(self, shared: Dict) -> None:
         """No preparation needed for status query."""
         return None
     
     async def exec_async(self, prep_res: None) -> List[Dict]:
-        """Query the status page."""
+        """Query the status page with caching."""
+        import time
         from utils.status_retrieval import scrape_session
         
+        # Check cache age
+        current_time = time.time()
+        cache_age = current_time - self._cache["last_fetch"]
+        
+        if cache_age < self._cache_ttl:
+            logger.debug(f"Status cache hit (age: {cache_age:.1f}s, TTL: {self._cache_ttl}s)")
+            return self._cache["data"]
+        
+        # Cache miss or expired - fetch fresh data
+        logger.debug(f"Status cache miss/expired (age: {cache_age:.1f}s) - fetching fresh data")
         results = await scrape_session()
-        return results if results is not None else []
+        results = results if results is not None else []
+        
+        # Update cache
+        self._cache["last_fetch"] = current_time
+        self._cache["data"] = results
+        
+        return results
     
     async def post_async(self, shared: Dict, prep_res: None, exec_res: Dict) -> str:
         """Write status results to shared store."""

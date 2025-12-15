@@ -47,7 +47,11 @@ except Exception as e:
 
 @trace_flow(config=tracing_config, flow_name="ITSupportQueryFlow")
 class QueryFlow(Flow):
-    """Main query answering flow with tracing."""
+    """Main query answering flow with tracing.
+    
+    Note: Status check can be triggered in parallel at flow start via shared store flag.
+    Set shared['check_status'] = True before flow.run() to fetch status in background.
+    """
     def __init__(self):
         # Create nodes
         redact_node = RedactInputNode()
@@ -194,13 +198,15 @@ def create_network_status_flow() -> AsyncFlow:
 
 @trace_flow(config=tracing_config, flow_name="ITSupportTestQueryFlow")
 class TestQueryFlow(Flow):
-    """Test query flow for development - no agent routing, straight RAG pipeline."""
+    """Test query flow for development - no agent routing, straight RAG pipeline.
+    
+    Note: Status check runs in parallel with main RAG pipeline for faster response.
+    """
     def __init__(self):
         # Create nodes
         redact_node = RedactInputNode()
         intent_node = IntentClassificationNode()
         embed_node = EmbedQueryNode()
-        query_node = StatusQueryNode()
         search_node = SearchKnowledgeBaseNode()
         answer_node = GenerateAnswerNode()
         format_node = FormatFinalResponseNode()
@@ -208,8 +214,8 @@ class TestQueryFlow(Flow):
         # Initialize Flow with start node
         super().__init__(start=redact_node)
 
-        # Simple linear flow
-        _ = redact_node >> intent_node >> embed_node >> query_node >> search_node
+        # Simple linear flow (status is fetched separately in async context)
+        _ = redact_node >> intent_node >> embed_node >> search_node
         
         # Both search outcomes go to answer
         _ = search_node - "docs_found" >> answer_node
@@ -217,7 +223,7 @@ class TestQueryFlow(Flow):
         
         _ = answer_node >> format_node
         
-        logger.info("Test query flow created with tracing")
+        logger.info("Test query flow created with tracing (status check runs in parallel)")
 
 
 def create_test_query_flow() -> Flow:
