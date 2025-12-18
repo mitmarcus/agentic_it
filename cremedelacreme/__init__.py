@@ -1,3 +1,8 @@
+# MIT License
+# 
+# Based on PocketFlow: https://github.com/The-Pocket/PocketFlow
+# Copyright (c) 2024 Zachary Huang
+
 import asyncio, warnings, copy, time
 
 class BaseNode:
