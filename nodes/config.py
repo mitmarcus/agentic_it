@@ -27,6 +27,22 @@ def _get_int_env(name: str) -> int:
     except ValueError:
         raise ValueError(f"Environment variable {name}={raw_value} is not a valid integer")
 
+
+def _get_bool_env(name: str, default: bool = False) -> bool:
+    """Read a boolean from environment variables. Accepts: true/false, 1/0, yes/no, on/off (case-insensitive)."""
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        raise ValueError(f"Environment variable {name} must be set")
+    
+    raw_lower = raw_value.lower().strip()
+    if raw_lower in ("true", "1", "yes", "on"):
+        return True
+    elif raw_lower in ("false", "0", "no", "off"):
+        return False
+    else:
+        raise ValueError(f"Environment variable {name}={raw_value} is not a valid boolean (use: true/false, 1/0, yes/no, on/off)")
+
+
 # Cache policy limits at module load
 POLICY_LIMITS = {
     "clarify_confidence_threshold": _get_float_env("AGENT_CLARIFY_CONFIDENCE_THRESHOLD"),
@@ -42,8 +58,8 @@ POLICY_LIMITS = {
 _RAG_CONFIG = {
     "top_k": _get_int_env("RAG_TOP_K"),
     "min_score": _get_float_env("RAG_MIN_SCORE"),
-    "max_context_tokens": int(os.getenv("RAG_MAX_CONTEXT_TOKENS", "2000")),
-    "embedding_dim": int(os.getenv("EMBEDDING_DIM", "384")),
+    "max_context_tokens": _get_int_env("RAG_MAX_CONTEXT_TOKENS"),
+    "embedding_dim": _get_int_env("EMBEDDING_DIM"),
     "chunk_size": _get_int_env("INGESTION_CHUNK_SIZE"),
     "chunk_overlap": _get_int_env("INGESTION_CHUNK_OVERLAP"),
     "source_dir": os.getenv("INGESTION_SOURCE_DIR", "./data/docs"),
@@ -51,7 +67,7 @@ _RAG_CONFIG = {
 
 # Cache feature flags 
 _FEATURE_FLAGS = {
-    "rerank": os.getenv("RERANK_ENABLED", "true").lower() == "true",  # Keep: most impactful step
-    "query_expansion": os.getenv("QUERY_EXPANSION_ENABLED", "false").lower() == "true",
-    "hyde": os.getenv("HYDE_ENABLED", "false").lower() == "true",
+    "rerank": _get_bool_env("RERANK_ENABLED"), 
+    "query_expansion": _get_bool_env("QUERY_EXPANSION_ENABLED", default=False),
+    "hyde": _get_bool_env("HYDE_ENABLED"),
 }
